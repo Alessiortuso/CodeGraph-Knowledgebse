@@ -1,51 +1,28 @@
-import os
-from ingestion.parser import CodeGraphParser
+from ingestion.git_processor import GitProcessor
+from ingestion.parser import CodeGraphParser # Ricorda che l'hai rinominato in parser
 
-def run_analysis():
-    v_parser = CodeGraphParser()
-    test_filename = "test_completo.py"
+def main():
+    repo_url = "https://github.com/Python-World/python-mini-projects"
+    temp_path = "./temp_repo"
     
-    print(f"PREPARAZIONE FILE DI TEST: {test_filename}...")
-    codice_test = """
-import math
-import os
-
-# Questa funzione calcola l'area di un cerchio
-def calcola_area(raggio):
-    return math.pi * (raggio ** 2)
-
-@app.get("/api/area")
-def api_calcola_area():
-    risultato = calcola_area(10)
-    print(f"Risultato: {risultato}")
-"""
-    
-    with open(test_filename, "w", encoding="utf-8") as f:
-        f.write(codice_test)
-
-    print(f"ANALISI IN CORSO SU {test_filename}...")
+    processor = GitProcessor()
+    parser = CodeGraphParser()
     
     try:
-        nodes = v_parser.parse_file(test_filename)
+        local_path = processor.clone_repo(repo_url, temp_path)
 
-        print(f"\nANALISI COMPLETATA - RISULTATI:")
-        print("="*50)
-        
-        for n in nodes:
-            tipo_label = n.type.upper()
-            
-            print(f"TIPO: [{tipo_label}] Nome: {n.name}")
-            print(f"  Linee: {n.start_line}-{n.end_line}")
-            
-            if n.calls:
-                print(f"  Chiama: {list(set(n.calls))}")
-            
-            anteprima = n.content.splitlines()[0][:50] if n.content else "N/A"
-            print(f"  Codice: {anteprima}...")
-            print("-" * 30)
+        print(f"Avvio analisi sulla repository clonata...")
+        results = processor.process_repo(local_path, parser)
+
+        total_nodes = sum(len(nodes) for nodes in results.values())
+        print(f"\nAnalisi Terminata")
+        print(f"Repository: {repo_url}")
+        print(f"File analizzati: {len(results)}")
+        print(f"Nodi estratti: {total_nodes}")
 
     except Exception as e:
-        print(f"ERRORE DURANTE L'ANALISI: {e}")
+        print(f"Errore durante il processo: {e}")
 
 if __name__ == "__main__":
-    run_analysis()
+    print("Il programma è partito", flush=True)
+    main()
