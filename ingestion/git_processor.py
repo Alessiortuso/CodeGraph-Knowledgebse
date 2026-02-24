@@ -2,7 +2,15 @@ import os
 import git
 import shutil
 import stat
+import subprocess  
 from typing import List
+
+#questa classe serve a stampare il progresso della clonazione in tempo reale
+#impedisce al terminale di andare in timeout durante il download
+class CloneProgress(git.RemoteProgress):
+    def update(self, op_code, cur_count, max_count=None, message=''):
+        if message:
+            print(f"Progresso Git: {message} ({cur_count}/{max_count or '?'})", end='\r')
 
 class GitProcessor:
     def __init__(self, supported_extensions=None):
@@ -40,16 +48,50 @@ class GitProcessor:
                 print(f"non sono riuscito a cancellare tutto: {e}")
                 print("Provo comunque a procedere...")
 
+        # qui mi assicuro che la cartella base (es. storage/) esista
+        os.makedirs(os.path.dirname(target_dir), exist_ok=True)
+
         print(f"clonazione in corso da: {repo_url}")
         try:
             #comando git che scarica i file fisicamente
-            git.Repo.clone_from(repo_url, target_dir)
-            print("clonazione completata")
-        except Exception as e:
+            #uso subprocess.run per evitare i crash di threading su repository grandi
+            subprocess.run(["git", "clone", repo_url, target_dir], check=True)
+            print("\nclonazione completata")
+        except subprocess.CalledProcessError as e:
             #se l'url è sbagliato o non c'è connessione, il programma si ferma qui
-            print(f"errore critico git: {e}")
+            print(f"\nerrore critico git durante subprocess: {e}")
+            raise
+        except Exception as e:
+            print(f"\nerrore imprevisto: {e}")
             raise
         return target_dir
+
+    def get_commit_history(self, repo_path: str, max_commits: int = 50):
+        """
+        estrarre la storia dei cambiamenti (commit) per capire chi ha fatto cosa.
+        essenziale per collegare gli autori ai file modificati.
+        """
+        commits_data = []
+        try:
+            # carichiamo la repository locale appena clonata
+            repo = git.Repo(repo_path)
+            
+            # iteriamo sugli ultimi commit effettuati dagli sviluppatori
+            for commit in repo.iter_commits(max_count=max_commits):
+                commits_data.append({
+                    "hash": commit.hexsha,               # id unico del commit
+                    "author": commit.author.name,        # chi ha scritto il codice
+                    "email": commit.author.email,       # email dell'autore
+                    "date": commit.authored_datetime.isoformat(), # quando è successo
+                    "message": commit.message.strip(),   # spiegazione del cambiamento
+                    "files_changed": list(commit.stats.files.keys()) # lista dei file toccati
+                })
+            
+            print(f"estratta cronologia di {len(commits_data)} commit")
+        except Exception as e:
+            print(f"errore durante l'estrazione dei commit: {e}")
+            
+        return commits_data
 
     def get_repo_files(self, repo_path: str) -> List[str]:
         """
@@ -61,9 +103,9 @@ class GitProcessor:
         # os.walk scansiona ricorsivamente ogni singola sottocartella
         for root, dirs, files in os.walk(repo_path):
             
-            # questa riga modifica 'dirs' sul posto: dice a os.walk di non entrare 
-            # nelle cartelle che abbiamo messo in self.ignore_folders. 
-            # risparmiamo un sacco di tempo di esecuzione.
+            # questa riga modifica dirs sul posto, dice a os.walk di non entrare 
+            # nelle cartelle che abbiamo messo in self.ignore_folders
+            # risparmiamo un sacco di tempo di esecuzione
             dirs[:] = [d for d in dirs if d not in self.ignore_folders]
             
             for file in files:
