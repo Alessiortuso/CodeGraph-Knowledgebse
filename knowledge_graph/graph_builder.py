@@ -24,9 +24,10 @@ class GraphBuilder:
         self.client.execute_query(query, {"project_name": project_name})
         print(f"Dati del progetto '{project_name}' rimossi")
 
-    def save_nodes(self, project_name, file_path, nodes):
+    def save_nodes(self, project_name, file_path, nodes, repo_url):
         """
-        prende i dati estratti dal parser e li trasforma in nodi e relazioni nel database
+        prende i dati estratti dal parser e li trasforma in nodi e relazioni nel database.
+        Ho aggiunto repo_url per permettere al sistema di ricordare da dove viene il codice.
         """
         # normalizziamo il percorso del file per il database (usa / invece di \)
         # questo serve perché Git usa sempre / anche su Windows
@@ -43,7 +44,8 @@ class GraphBuilder:
             SET n.content = $content,
                 n.start_line = $start_line,
                 n.end_line = $end_line,
-                n.embedding = $embedding
+                n.embedding = $embedding,
+                n.url = $url
             """
             self.client.execute_query(query, {
                 "name": node.name,        
@@ -53,7 +55,8 @@ class GraphBuilder:
                 "content": node.content,  
                 "start_line": node.start_line,
                 "end_line": node.end_line,
-                "embedding": embedding_vector
+                "embedding": embedding_vector,
+                "url": repo_url 
             })
 
             # creazione delle relazioni (frecce)

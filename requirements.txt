@@ -1,0 +1,19 @@
+# Connessione Database e Grafi
+neo4j
+gqlalchemy
+
+# AI e Calcolo
+ollama
+numpy
+
+# Gestione Repository e Sistema
+GitPython
+
+# Parsing AST (Analisi del Codice)
+tree-sitter
+tree-sitter-python
+tree-sitter-java
+tree-sitter-javascript
+
+# Utility (spesso usate nei moduli di analisi)
+python-dotenv

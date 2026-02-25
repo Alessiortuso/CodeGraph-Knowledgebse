@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  memgraph:
+    # Cambiato da mage a platform per avere il Lab nel browser
+    image: memgraph/memgraph-platform:latest
+    container_name: memgraph_db
+    ports:
+      - "7687:7687"
+      - "3000:3000"
+    # L'immagine platform gestisce internamente l'avvio dei log e del Lab
+
+  app:
+    build: .
+    container_name: software_analyzer_app
+    tty: true
+    stdin_open: true
+    depends_on:
+      - memgraph
+    volumes:
+      - ./storage:/app/storage
+    environment:
+      - MEMGRAPH_HOST=memgraph
+      - MEMGRAPH_PORT=7687
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

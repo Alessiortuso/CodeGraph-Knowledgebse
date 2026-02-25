@@ -25,7 +25,7 @@ class GitProcessor:
         la cartella .git contiene file read-Only
         shutil.rmtree fallisce se prova a cancellarli direttamente
         questa funzione intercetta l'errore, cambia i permessi del file in "scrittura"
-        e riprova la cancellazione, serve quindi per pulire la temp_repo
+        e riprova la cancellazione, serve quindi per pulire la cartella storage
         """
         if not os.access(path, os.W_OK):
             os.chmod(path, stat.S_IWUSR) #qui ambia il permesso a scrittura
@@ -79,12 +79,12 @@ class GitProcessor:
             # iteriamo sugli ultimi commit effettuati dagli sviluppatori
             for commit in repo.iter_commits(max_count=max_commits):
                 commits_data.append({
-                    "hash": commit.hexsha,               # id unico del commit
-                    "author": commit.author.name,        # chi ha scritto il codice
-                    "email": commit.author.email,       # email dell'autore
-                    "date": commit.authored_datetime.isoformat(), # quando è successo
-                    "message": commit.message.strip(),   # spiegazione del cambiamento
-                    "files_changed": list(commit.stats.files.keys()) # lista dei file toccati
+                    "hash": commit.hexsha,               
+                    "author": commit.author.name,        
+                    "email": commit.author.email,       
+                    "date": commit.authored_datetime.isoformat(), 
+                    "message": commit.message.strip(),   
+                    "files_changed": list(commit.stats.files.keys()) 
                 })
             
             print(f"estratta cronologia di {len(commits_data)} commit")
