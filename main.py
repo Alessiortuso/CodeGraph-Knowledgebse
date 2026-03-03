@@ -28,13 +28,12 @@ def display_menu(projects):
     return input("\nScegli un'opzione: ")
 
 def get_existing_projects(client):
-    """Recupera l'elenco dei progetti salvati nel Graph DB"""
+    """recupera l'elenco dei progetti salvati nel graph DB"""
     query = "MATCH (n) WHERE n.project IS NOT NULL RETURN DISTINCT n.project AS nome"
     results = client.execute_query(query, {})
     return [r['nome'] for r in results]
 
 def main():
-    # --- 1. SETUP COMPONENTI ---
     try:
         client = GraphClient() 
         embedder = CodeEmbedder()
@@ -60,7 +59,7 @@ def main():
             idx = int(input(f"Seleziona il numero del progetto (1-{len(progetti)}): ")) - 1
             progetto_scelto = progetti[idx]
             
-            # Recuperiamo il report analytics come contesto base
+            # recuperiamo il report analytics come contesto base
             print(f"\n Recupero metriche e hotspots per '{progetto_scelto}'...")
             analytics_report = controller.run_project_analytics(progetto_scelto)
             
@@ -73,11 +72,11 @@ def main():
                 
                 print(" L'AI sta analizzando la richiesta...")
                 
-                # A. PLANNING: L'AI decide cosa cercare
+                # A. PLANNING: l ai decide cosa cercare
                 plan = planner.plan(user_query)
                 print(f" Strategia pianificata: {plan}")
                 
-                # B. RETRIEVAL: Recupero dati in base al piano
+                # B. RETRIEVAL: recupero dati in base al piano
                 code_ctx = []
                 commit_ctx = []
                 
@@ -89,7 +88,7 @@ def main():
                     print(" Analisi della cronologia commit...")
                     _, commit_ctx = nsr.search(user_query, progetto_scelto, top_k=5)
                 
-                # C. SYNTHESIS: Generazione risposta finale
+                # C. SYNTHESIS: generazione risposta finale
                 print("  Generazione risposta...")
                 risposta = synthesizer.answer(user_query, code_ctx, commit_ctx, analytics_report)
                 
@@ -108,7 +107,7 @@ def main():
             idx = int(input(f"Quale vuoi aggiornare? (1-{len(progetti)}): ")) - 1
             nome = progetti[idx]
             
-            # Recupero URL esistente per comodità
+            # Recupero url esistente per comodità
             q_url = "MATCH (n {project: $p}) WHERE n.url IS NOT NULL RETURN n.url LIMIT 1"
             res = client.execute_query(q_url, {"p": nome})
             url = res[0]['n.url'] if res else input(f"URL non trovato. Inseriscilo manualmente: ")
@@ -117,7 +116,7 @@ def main():
             controller.process_new_repository(url, nome)
 
         elif scelta == "0":
-            print(" Uscita in corso. Buona programmazione!")
+            print(" Uscita in corso")
             break
 
     client.close()

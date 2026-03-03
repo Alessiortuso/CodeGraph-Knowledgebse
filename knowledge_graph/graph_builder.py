@@ -4,87 +4,136 @@ import os
 
 class GraphBuilder:
     """
-    questa classe trasforma i dati estratti dal parser 
-    in nodi e relazioni nel database
+    questa classe trasforma i dati estratti dal parser in una struttura gerarchica
+    Folder -> File -> CodeEntity
     """
     def __init__(self, client: GraphClient, embedder: CodeEmbedder):
-        """
-        inizializzo il builder con il client per il database e l embedder per i vettori
-        """
         self.client = client
         self.embedder = embedder
 
     def clear_project(self, project_name):
         """
-        rimuove tutti i nodi appartenenti a un singolo progetto
-        questo serve per poter aggiornare un progetto, quindi cancello il vecchio e metto il nuovo
-        senza toccare i dati di altri repository caricati
+        rimuove tutti i nodi di un progetto specifico prima di una nuova ingestion
         """
         query = "MATCH (n {project: $project_name}) DETACH DELETE n"
         self.client.execute_query(query, {"project_name": project_name})
-        print(f"Dati del progetto '{project_name}' rimossi")
+        print(f"Dati del progetto '{project_name}' rimossi.")
 
-    def save_nodes(self, project_name, file_path, nodes, repo_url):
+    def save_nodes(self, project_name, file_path, nodes, repo_url, file_content):
         """
-        prende i dati estratti dal parser e li trasforma in nodi e relazioni nel database.
-        Ho aggiunto repo_url per permettere al sistema di ricordare da dove viene il codice.
+        crea la struttura gerarchica nel database
+        garantisce la creazione del nodo File e dei nodi CodeEntity collegati
         """
-        # normalizziamo il percorso del file per il database (usa / invece di \)
-        # questo serve perché Git usa sempre / anche su Windows
-        normalized_file_path = file_path.replace(os.sep, '/')
+        # 1. normalizzazione percorsi
+        normalized_path = file_path.replace(os.sep, '/')
+        parts = normalized_path.split('/')
+        file_name = parts[-1]
+
+        # 2. CREAZIONE GERARCHIA FOLDER
+        if len(parts) > 1:
+            dir_path = "/".join(parts[:-1])
+            dir_name = parts[-2]
+            self.client.execute_query("""
+                MERGE (d:Folder {path: $path, project: $project})
+                SET d.name = $name
+            """, {"path": dir_path, "project": project_name, "name": dir_name})
+
+        # 3. CREAZIONE NODO FILE 
+        self.client.execute_query("""
+            MERGE (f:File {path: $path, project: $project})
+            SET f.name = $name, 
+                f.url = $url,
+                f.content = $content  // <--- PROPRIETÀ AGGIUNTA ORA
+        """, {
+            "path": normalized_path,
+            "project": project_name,
+            "name": file_name,
+            "url": repo_url,
+            "content": file_content 
+        })
+
+        # colleghiamo il file alla sua cartella
+        if len(parts) > 1:
+            dir_path = "/".join(parts[:-1])
+            self.client.execute_query("""
+                MATCH (d:Folder {path: $path, project: $project})
+                MATCH (f:File {path: $f_path, project: $project})
+                MERGE (d)-[:CONTAINS_FILE]->(f)
+            """, {"path": dir_path, "f_path": normalized_path, "project": project_name})
+
+        # 4. CREAZIONE CODE ENTITIES (funzioni, classi, ecc)
+        current_class_node = None # serve per tracciare la gerarchia Classe -> Metodo
 
         for node in nodes:
-            # chiedo all embedder di trasformare il codice sorgente in numeri
-            embedding_vector = self.embedder.get_embedding(node.content)
-
-            # poi crea o aggiorna il nodo
-            # merge agisce come: "se esiste già un nodo con questi dati, usalo, altrimenti crealo"
-            query = """
-            MERGE (n:CodeEntity {name: $name, type: $type, file: $file, project: $project})
-            SET n.content = $content,
-                n.start_line = $start_line,
-                n.end_line = $end_line,
-                n.embedding = $embedding,
-                n.url = $url
+            # genero l'embedding del singolo blocco, molto più sicuro e veloce
+            embedding = self.embedder.get_embedding(node.content)
+            
+            # se il parser ha identificato uno script piatto, aggiungiamo la label :script
+            # questo permette al NSRProcessor di trovarlo istantaneamente
+            extra_label = ":script" if node.type == "script" else ""
+            
+            query = f"""
+            MATCH (f:File {{path: $path, project: $project}})
+            MERGE (ce:CodeEntity{extra_label} {{name: $name, type: $type, file: $path, project: $project}})
+            SET ce.content = $content,
+                ce.start_line = $start_line,
+                ce.end_line = $end_line,
+                ce.embedding = $embedding
+            MERGE (f)-[:CONTAINS_ENTITY]->(ce)
+            RETURN ce
             """
             self.client.execute_query(query, {
-                "name": node.name,        
-                "type": node.type,        
-                "file": normalized_file_path,        
-                "project": project_name,  
-                "content": node.content,  
+                "name": node.name,
+                "type": node.type,
+                "path": normalized_path,
+                "project": project_name,
+                "content": node.content,
                 "start_line": node.start_line,
                 "end_line": node.end_line,
-                "embedding": embedding_vector,
-                "url": repo_url 
+                "embedding": embedding
             })
 
-            # creazione delle relazioni (frecce)
+            # --- LOGICA GERARCHICA ---
+            if node.type == "class":
+                current_class_node = node.name
+            elif node.type == "function" and current_class_node:
+                # colleghiamo il metodo alla classe
+                rel_class_query = """
+                MATCH (c:CodeEntity {name: $class_name, type: 'class', file: $path, project: $project})
+                MATCH (m:CodeEntity {name: $method_name, type: 'function', file: $path, project: $project})
+                MERGE (c)-[:HAS_METHOD]->(m)
+                """
+                self.client.execute_query(rel_class_query, {
+                    "class_name": current_class_node,
+                    "method_name": node.name,
+                    "path": normalized_path,
+                    "project": project_name
+                })
+
+            # 5. RELAZIONI TRA ENTITÀ (CALLS)
             for call_name in node.calls:
                 rel_query = """
-                MATCH (caller:CodeEntity {name: $name, file: $file, project: $project})
+                MATCH (caller:CodeEntity {name: $name, file: $path, project: $project})
                 MERGE (called:CodeEntity {name: $call_name, project: $project})
+                ON CREATE SET called.type = 'unresolved_external'
                 MERGE (caller)-[:CALLS]->(called)
                 """
                 self.client.execute_query(rel_query, {
-                    "name": node.name, 
-                    "file": normalized_file_path, 
-                    "project": project_name, 
+                    "name": node.name,
+                    "path": normalized_path,
+                    "project": project_name,
                     "call_name": call_name
                 })
 
     def save_commits(self, project_name, commits):
         """
-        prende la lista dei commit estratta dal GitProcessor e li salva nel database
-        collegando ogni commit ai file che sono stati modificati
+        salva i commit e li collega ai nodi file modificati
         """
-        print(f"Generazione embedding e salvataggio per {len(commits)} commit...")
-        
+        print(f"Salvataggio di {len(commits)} commit...")
         for c in commits:
-            # creiamo l'embedding del messaggio per permettere ricerche semantiche
             commit_vector = self.embedder.get_embedding(c['message'])
 
-            # creiamo il nodo del commit con le info dell'autore e il messaggio
+            # 1. creazione nodo Commit
             query_commit = """
             MERGE (c:Commit {hash: $hash, project: $project})
             SET c.author = $author,
@@ -103,22 +152,21 @@ class GraphBuilder:
                 "embedding": commit_vector
             })
 
-            # ora creiamo il collegamento tra il commit e i file coinvolti
+            # 2. collegamento MODIFIED
             for file_path in c['files_changed']:
-                # normalizziamo il percorso di Git per sicurezza
                 git_path = file_path.replace('\\', '/')
-                
-                # usiamo ENDS WITH o CONTAINS per ignorare i prefissi delle cartelle locali
+                git_file_name = git_path.split('/')[-1]
+
                 rel_query = """
                 MATCH (c:Commit {hash: $hash, project: $project})
-                MATCH (f:CodeEntity {project: $project})
-                WHERE f.file ENDS WITH $file_path OR f.file CONTAINS $file_path
+                MATCH (f:File {project: $project})
+                WHERE f.path ENDS WITH $file_path OR f.name = $file_name
                 MERGE (c)-[:MODIFIED]->(f)
                 """
                 self.client.execute_query(rel_query, {
                     "hash": c['hash'],
                     "file_path": git_path,
+                    "file_name": git_file_name,
                     "project": project_name
                 })
-        
-        print(f"Salvataggio commit completato per {project_name}")
+        print(f"Salvataggio commit completato.")

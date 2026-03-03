@@ -15,8 +15,8 @@ class CommitAnalyzer:
         """
         # questa query trova i file piu caldi
         query = """
-        MATCH (f:CodeEntity {project: $p})<-[:MODIFIED]-(c:Commit)
-        RETURN f.file AS file, count(c) AS modifications
+        MATCH (f:File {project: $p})<-[:MODIFIED]-(c:Commit)
+        RETURN f.path AS file, count(c) AS modifications
         ORDER BY modifications DESC
         LIMIT $limit
         """

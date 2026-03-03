@@ -20,40 +20,45 @@ class IngestionController:
 
     def process_new_repository(self, repo_url, project_name):
         """
-        nel caso in cui vogliamo caicare un nuovo repository
+        nel caso in cui vogliamo caricare un nuovo repository
         """
         temp_path = f"./storage/{project_name}"
         
         # --- STEP 1: DOWNLOAD ---
-        # usa il gitprocessor per scaricare fisicamente il codice
         print(f"--- 1. Clonazione repository: {project_name} ---")
         local_path = self.processor.clone_repo(repo_url, temp_path)
 
         # --- STEP 2: ANALISI E PULIZIA ---
-        # prima di caricare i nuovi dati, pulisce il database dal vecchio 
-        # (se esisteva già un progetto con lo stesso nome)
         print(f"--- 2. Analisi AST e generazione vettori ---")
         self.builder.clear_project(project_name)
         
-        # trasformo i file in una struttura dati comprensibile (risultati del parsing)
+        # trasformo i file in una struttura dati comprensibile
         results = self.processor.process_repo(local_path, self.parser)
 
         # --- STEP 3: COSTRUZIONE GRAFO ---
-        # invio i nodi estratti al graphbuilder per salvarli in Memgraph
+        # AGGIORNAMENTO: Leggiamo il contenuto del file per passarlo al GraphBuilder
         print(f"--- 3. Salvataggio nel Graph DB ---")
         for file_path, nodes in results.items():
-            rel_path = os.path.relpath(file_path, temp_path)
-            self.builder.save_nodes(project_name, rel_path, nodes, repo_url)
+            # Calcoliamo il percorso relativo (es. src/main.py)
+            rel_path = os.path.relpath(file_path, local_path) 
+            
+            try:
+                # Leggiamo il codice integrale dal disco
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    file_content = f.read()
+                
+                # Ora passiamo 5 argomenti: il 5° è il contenuto del file!
+                self.builder.save_nodes(project_name, rel_path, nodes, repo_url, file_content)
+                
+            except Exception as e:
+                print(f"⚠️ Errore lettura file {file_path}: {e}")
 
         # --- STEP 4: STORIA GIT ---
-        # recupero tutti i commit e li salva creando le relazioni tra autori e codice
         print(f"--- 4. Salvataggio storia Git ---")
         commits = self.processor.get_commit_history(local_path)
         self.builder.save_commits(project_name, commits)
 
         # --- STEP 5: CONCLUSIONE E REPORT ---
-        # una volta che i dati sono dentro, attiva l'analizzatore per generare 
-        # le metriche del modulo analytics, giusto per dare alcune informazioni generali
         return self.run_project_analytics(project_name)
 
     def run_project_analytics(self, project_name):
@@ -74,7 +79,6 @@ class IngestionController:
         for e in experts:
             print(f" - {e['author']}: {e['commit_count']} commit")
 
-        # restituisco il pacchetto completo che verrà usato dal synthesizer
         return {
             "hotspots": hotspots, 
             "experts": experts,

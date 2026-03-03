@@ -2,8 +2,7 @@ import ollama
 
 class Synthesizer:
     """
-    questo modulo prende tutti i dati grezzi trovati nel database (codice, commit, statistiche)
-    e li impacchetta in un linguaggio naturale, in questo caso usando llm locale ollama
+    fa da ponte tra i dati grezzi del grafo e la risposta finale dell'LLM.
     """
     
     def __init__(self, model_name='llama3'):
@@ -11,7 +10,7 @@ class Synthesizer:
         inizializzo la connessione a ollama
         """
         self.model_name = model_name
-        print(f"Synthesizer pronto (Modello locale: {self.model_name})")
+        print(f" Synthesizer pronto (Modello locale: {self.model_name})")
 
     def answer(self, question, context_code, context_commits, analytics_report):
         """
@@ -22,13 +21,18 @@ class Synthesizer:
         # trasforma i dati grezzi in una stringa di testo strutturata che l'ai può leggere
         context_text = self._prepare_prompt(question, context_code, context_commits, analytics_report)
 
+        # vediamo cosa stiamo effettivamente dando in pasto al modello
+        print(f"\n File analizzati dal Synthesizer: {[n.get('name') for n in context_code]}")
+
         try:
-            # 2. CHIAMATA A OLLAMA
-            # invio il mega-testo al modello locale
-            
+            # istruzioni di sistema per forzare l'AI a usare i documenti
             system_content = (
-                'Sei un assistente tecnico esperto. Rispondi in italiano usando solo il contesto fornito. '
-                'Se suggerisci query Cypher, usa pow(x, y) invece di x^y.'
+                "Sei un assistente tecnico senior che opera su un Code Graph. "
+                "Il tuo compito è rispondere in italiano usando SOLO i documenti forniti sotto. "
+                "RELAZIONE FILE-CARTELLA: Un file appartiene a un modulo solo se il suo PERCORSO lo conferma. "
+                "Se l'utente chiede il codice di un file (es. ball_bounce.py) e lo vedi nei documenti "
+                "nella sezione CONTENUTO, DEVI incollarlo integralmente. "
+                "Se un file è citato ma il suo CONTENUTO è indicato come 'vuoto', dì chiaramente che il file esiste ma il codice non è disponibile."
             )
 
             response = ollama.chat(model=self.model_name, messages=[
@@ -45,45 +49,65 @@ class Synthesizer:
             return response['message']['content']
             
         except Exception as e:
-            return f" Errore durante la generazione con Ollama: {e}"
+            return f" Errore durante la generazione Vitali-Style: {e}"
 
     def _prepare_prompt(self, question, context_code, context_commits, analytics_report):
         """
-        crea il mega-testo (prompt) che contiene la domanda e le prove trovate nel db
+        crea il mega-testo che contiene la domanda e le prove trovate nel db
         """
+        
         prompt = f"""
-        DOMANDA: {question}
+        ### DOMANDA DELL'UTENTE
+        {question}
 
-        --- DATI ANALITICI DEL PROGETTO ---
-        // qui passiamo i metadati calcolati: chi sono i leader e i file hotspot
-        File Hotspots (più critici): {analytics_report.get('hotspots')}
-        Esperti del progetto: {analytics_report.get('experts')}
-
-        --- CODICE SORGENTE TROVATO ---
-        // qui inseriamo i pezzi di codice reali estratti dal grafo
+        ### CONTESTO TECNICO (DOCUMENTI DI CODICE)
         {self._format_code(context_code)}
 
-        --- STORIA RECENTE (COMMIT) ---
-        // qui aggiungiamo la storia delle modifiche
+        ### DATI ANALITICI E STATISTICHE
+        Esperti: {analytics_report.get('experts', 'N/D')}
+        File critici (Hotspots): {analytics_report.get('hotspots', 'N/D')}
+
+        ### STORIA DELLE MODIFICHE (COMMIT)
         {self._format_commits(context_commits)}
 
-        Sulla base di queste informazioni, fornisci una risposta tecnica dettagliata.
-        Se la domanda riguarda chi ha scritto il codice, consulta la sezione Esperti.
-        Se riguarda file instabili, consulta la sezione Hotspots.
+        ---
+        ISTRUZIONE: Usa i DOCUMENTI sopra per fornire la risposta. 
+        Se il codice richiesto è presente, incollalo tutto. 
+        Se vedi file estranei (come leapyear.py) che non c'entrano con la cartella richiesta, ignorali.
         """
         return prompt
 
-    # --- METODI HELPER (Utility) ---
-    # servono a trasformare le liste di dizionari in testo leggibile
-
     def _format_code(self, nodes):
-        """trasforma i nodi del grafo in blocchi di codice markdown"""
-        if not nodes: return "Nessun codice rilevante trovato."
-        # Ho aggiunto .get() per evitare crash se mancano chiavi nei dati del database
-        return "\n".join([f"FILE: {n.get('file', 'N/A')}\n```python\n{n.get('content', '')}\n```" for n in nodes])
+        """Formatta i nodi: blocchi di codice separati e titolati con verifica del contenuto"""
+        if not nodes: return "Nessun file di codice trovato nel database."
+        
+        output = []
+        for n in nodes:
+            name = n.get('name', 'Sconosciuto')
+            content = n.get('content', '').strip()
+            path = n.get('path', n.get('file', 'N/A'))
+            ctype = n.get('type', 'Elemento')
+
+            # se il contenuto è troppo corto o è solo il nome del file, lo marchiamo come vuoto
+            # evito che stringhe tipo folder o file vengano scambiate per codice
+            if len(content) < 35 and name in content:
+                content = ""
+
+            if content:
+                block = (
+                    f"--- INIZIO DOCUMENTO: {name} ---\n"
+                    f"TIPO: {ctype}\n"
+                    f"PERCORSO: {path}\n"
+                    f"CONTENUTO:\n{content}\n"
+                    f"--- FINE DOCUMENTO: {name} ---"
+                )
+                output.append(block)
+            else:
+                output.append(f"STRUTTURA: {name} | PERCORSO: {path} | (Contenuto codice non disponibile o file vuoto)")
+        
+        return "\n\n".join(output)
 
     def _format_commits(self, commits):
-        """trasforma i commit in una lista puntata"""
-        if not commits: return "Nessuna cronologia trovata."
-        # Ho aggiunto .get() per gestire eventuali dati mancanti nei commit
-        return "\n".join([f"- {c.get('author', 'Autore sconosciuto')}: {c.get('message', '')} ({c.get('date', '')})" for c in commits])
+        """trasforma i commit in una lista dettagliata per l'autore"""
+        if not commits: return "Nessuna cronologia disponibile per questo contesto."
+        return "\n".join([f"- {c.get('author')}: {c.get('message')} ({c.get('date')})" for c in commits])

@@ -7,7 +7,6 @@ from typing import List
 
 # questa classe è una specie di contenitore di dati che rappresenta funzioni, classi o altro
 class CodeNode:
-
     def __init__(
         self,
         name: str,           
@@ -29,9 +28,8 @@ class CodeNode:
 
 # questa classe analizza il file
 class CodeGraphParser:
-
     def __init__(self):
-        #mappa dei linguaggi supportati e le loro Query specifiche
+        # mappa dei linguaggi supportati e le loro Query specifiche
         self.lang_configs = {
             "python": {
                 "lib": tspy.language(),
@@ -55,7 +53,7 @@ class CodeGraphParser:
                     (import_declaration) @import.def
                     (line_comment) @comment.text
                     (block_comment) @comment.text
-                   
+                    
                     (modifiers (annotation name: (identifier) @anno_name 
                         (#match? @anno_name "GetMapping|PostMapping|RequestMapping|PutMapping|DeleteMapping"))) @api.endpoint
                 """
@@ -77,7 +75,7 @@ class CodeGraphParser:
             }
         }
 
-    #capire il linguaggio automaticamente
+    # capire il linguaggio automaticamente
     def _detect_language(self, file_path: str) -> str:
         ext = os.path.splitext(file_path)[1].lower()
         mapping = {
@@ -92,22 +90,18 @@ class CodeGraphParser:
 
 
     def parse_file(self, file_path: str) -> List[CodeNode]:
-
-        #capisce il linguaggio automaticamente e carica la configurazione
+        # capisce il linguaggio automaticamente e carica la configurazione
         lang_name = self._detect_language(file_path)
         config = self.lang_configs[lang_name]
 
-        #specifichiamo che vogliamo analizzare il linguaggio capito dal file
+        # specifichiamo che vogliamo analizzare il linguaggio capito dal file
         language = Language(config["lib"])
         parser = Parser(language)
 
         # la Query è come un filtro
-        # cerchiamo definizioni di funzioni/classi e dove vengono fatte chiamate
-        # @class.def e @func.call sono etichette che mettiamo ai pezzi trovati
         query_text = config["query"]
 
         # compiliamo la query
-        # query() trasforma il testo della query in un oggetto Query
         query = language.query(query_text)
 
         # leggiamo il file come testo
@@ -129,27 +123,21 @@ class CodeGraphParser:
         nodes: List[CodeNode] = []
         flat_captures = []
 
-        # il dizionario restituito è diviso per etichette. lo appiattiamo in una lista
-        # per poter ordinare tutto cronologicamente (come appare nel file)
+        # appiattiamo in una lista per poter ordinare tutto cronologicamente
         for tag, node_list in captures_dict.items():
             for node in node_list:
                 flat_captures.append((node, tag))
 
         # ordiniamo i pezzi in base a dove appaiono (start_byte)
-        # così sappiamo che se troviamo una chiamata, appartiene all'ultima funzione letta.
         flat_captures.sort(key=lambda x: x[0].start_byte)
-
 
         # processiamo ogni pezzo trovato
         for node, tag in flat_captures:
-
-            # estraiamo il nome del nodo (per esempio il nome della funzione) dai byte originali
+            # estraiamo il nome del nodo dai byte originali
             name = source_bytes[node.start_byte:node.end_byte].decode("utf8")
-
 
             # se troviamo l'inizio di una funzione o classe
             if "class.def" in tag or "func.def" in tag:
-
                 # node è solo il nome. node.parent è l'intero blocco (testa e corpo)
                 full_node = node.parent
 
@@ -158,29 +146,24 @@ class CodeGraphParser:
                     full_node.start_byte:full_node.end_byte
                 ].decode("utf8")
 
+                # --- LIMITATORE DI CONTESTO ---
+                if len(content) > 4000:
+                    content = content[:4000] + "\n... [Codice troncato per limiti di contesto] ..."
 
                 # creiamo l oggetto CodeNode con le info complete
                 nodes.append(
                     CodeNode(
                         name=name,
-                        type="function" if "func" in tag else "class",
-
+                        type="class" if "class" in tag else "function",
                         content=content,
-
-                        # Aggiungiamo 1 perché Tree-sitter conta da 0, gli umani da 1
                         start_line=full_node.start_point[0] + 1,
                         end_line=full_node.end_point[0] + 1,
                     )
                 )
 
-
             # se troviamo una chiamata a una funzione (per esempio print() o calcola())
             elif tag == "func.call":
-
-                # se abbiamo già trovato almeno una funzione, e quindi nodes non è vuota,
-                # aggiungiamo questa chiamata alla lista calls dell'ultima funzione creata
                 if nodes:
-                    # aggiungiamo la chiamata solo se l'ultimo nodo è una funzione o classe
                     if nodes[-1].type in ["function", "class", "api_endpoint"]:
                         nodes[-1].calls.append(name)
 
@@ -196,10 +179,32 @@ class CodeGraphParser:
                 nodes.append(CodeNode(name="Comment", type="comment", content=content, 
                                      start_line=node.start_point[0]+1, end_line=node.end_point[0]+1))
 
-            # se troviamo un endpoint API (decoratori in Python)
+            # se troviamo un endpoint API
             elif tag == "api.endpoint":
                 content = source_bytes[node.start_byte:node.end_byte].decode("utf8")
                 nodes.append(CodeNode(name="API_Route", type="api_endpoint", content=content, 
                                      start_line=node.start_point[0]+1, end_line=node.end_point[0]+1))
+
+        # --- GESTIONE SCRIPT PIATTI (SENZA FUNZIONI/CLASSI) ---
+        # se non abbiamo trovato funzioni o classi, ma il file ha del testo,
+        # lo salviamo come entità 'script' per permettere all'ai di trovarlo
+        significant_nodes = [n for n in nodes if n.type in ["function", "class", "api_endpoint"]]
+        
+        if not significant_nodes and len(source_code.strip()) > 0:
+            # prendiamo il nome del file come nome dell'entità
+            script_name = os.path.basename(file_path)
+            content = source_code
+            if len(content) > 4000:
+                content = content[:4000] + "\n... [Codice troncato per limiti di contesto] ..."
+            
+            nodes.append(
+                CodeNode(
+                    name=script_name,
+                    type="script",
+                    content=content,
+                    start_line=1,
+                    end_line=len(source_code.splitlines())
+                )
+            )
 
         return nodes

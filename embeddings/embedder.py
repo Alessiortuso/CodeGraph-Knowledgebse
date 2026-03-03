@@ -2,23 +2,30 @@ import ollama
 
 class CodeEmbedder:
     """
-    questa classe si occupa di trasformare i pezzi di codice in embeddings
+    questa classe trasforma i pezzi di codice in embeddings
     """
     def __init__(self):
         self.model = "nomic-embed-text"
-        # 5.000 caratteri è una soglia sicura per non far crashare ollama
-        self.max_chars = 5000 
+        # metto max chars a 3000 per garantire che, inclusi i token speciali, 
+        # non si superi mai il limite hardware/software di Ollama
+        self.max_chars = 3000 
         print(f"Embedder locale pronto (Modello: {self.model})")
 
-    def get_embedding(self, text):
+    def get_embedding(self, text, is_query=False):
         if not text or text.strip() == "":
             return None
             
         try:
-            # taglio il testo in modo deciso per evitare l'errore di context length
-            safe_text = text[:self.max_chars]
+            # 1. pulizia aggressiva degli spazi cosi riduco drasticamente il numero di token
+            # trasformo tutti i whitespace (tab, multiple newline) in spazi singoli
+            clean_text = " ".join(text.split())
+            
+            # 2. applicazione del prefisso richiesto da Nomic
+            prefix = "search_query: " if is_query else "search_document: "
+            
+            # 3. taglio di sicurezza a 3000 caratteri
+            safe_text = (prefix + clean_text)[:self.max_chars]
 
-            # chiamata a ollama per generare il vettore
             response = ollama.embeddings(
                 model=self.model,
                 prompt=safe_text
@@ -26,5 +33,5 @@ class CodeEmbedder:
             return response['embedding']
             
         except Exception as e:
-            print(f"Errore nella generazione dell'embedding con Ollama: {e}")
+            print(f"Errore Ollama (Lunghezza testo: {len(text)}): {e}")
             return None
