@@ -2,112 +2,108 @@ import ollama
 
 class Synthesizer:
     """
-    fa da ponte tra i dati grezzi del grafo e la risposta finale dell'LLM.
+    esegue il filtering intelligente dei risultati
     """
     
     def __init__(self, model_name='llama3'):
-        """
-        inizializzo la connessione a ollama
-        """
         self.model_name = model_name
-        print(f" Synthesizer pronto (Modello locale: {self.model_name})")
+        print(f" Synthesizer pronto (Modello: {self.model_name})")
 
     def answer(self, question, context_code, context_commits, analytics_report):
         """
-        il metodo principale: riceve la domanda e tutti i contesti recuperati
+        riceve i dati e decide cosa inviare all'LLM per la massima precisione
         """
+        lower_q = question.lower()
         
-        # 1. COSTRUZIONE DEL PROMPT
-        # trasforma i dati grezzi in una stringa di testo strutturata che l'ai può leggere
-        context_text = self._prepare_prompt(question, context_code, context_commits, analytics_report)
+        # --- LOGICA DI FILTRO INTELLIGENTE (Anti-Rumore) ---
+        # 1. cerco se l'utente ha citato un file o una cartella specifica (match esatto)
+        exact_match = [n for n in context_code if n.get('name') and n.get('name').lower() in lower_q]
+        
+        if exact_match:
+            # se ho chiesto un elemento specifico e lo abbiamo trovato, mandiamo solo quello
+            filtered_context = exact_match
+            print(f" Match esatto trovato per: {[n.get('name') for n in exact_match]}")
+        
+        elif context_code and context_code[0].get('score', 0) > 0.85:
+            # 2. se ho scritto male il nome, prendiamo il top 1 dell'NSR se molto affidabile
+            filtered_context = [context_code[0]]
+            print(f" Match per somiglianza (Typo) rilevato: {context_code[0].get('name')}")
+        
+        else:
+            # 3. altrimenti domanda generica, mandiamo i primi 3 risultati
+            filtered_context = context_code[:3]
+            print(f" Domanda generica: invio top 3 file.")
 
-        # vediamo cosa stiamo effettivamente dando in pasto al modello
-        print(f"\n File analizzati dal Synthesizer: {[n.get('name') for n in context_code]}")
+        # preparazione del prompt strutturato
+        context_text = self._prepare_prompt(question, filtered_context, context_commits, analytics_report)
 
         try:
-            # istruzioni di sistema per forzare l'AI a usare i documenti
+            # Istruzioni di sistema 
             system_content = (
-                "Sei un assistente tecnico senior che opera su un Code Graph. "
-                "Il tuo compito è rispondere in italiano usando SOLO i documenti forniti sotto. "
-                "RELAZIONE FILE-CARTELLA: Un file appartiene a un modulo solo se il suo PERCORSO lo conferma. "
-                "Se l'utente chiede il codice di un file (es. ball_bounce.py) e lo vedi nei documenti "
-                "nella sezione CONTENUTO, DEVI incollarlo integralmente. "
-                "Se un file è citato ma il suo CONTENUTO è indicato come 'vuoto', dì chiaramente che il file esiste ma il codice non è disponibile."
+                "Sei un assistente tecnico senior esperto di Python. Rispondi in italiano.\n"
+                "REGOLE DI RISPOSTA:\n"
+                "1. Se l'utente chiede il codice di un file e il codice è presente nei documenti, "
+                "DEVI INCOLLARE IL CODICE INTEGRALE senza omettere nulla.\n"
+                "2. Se l'utente chiede di una CARTELLA (Folder), elenca i file contenuti e spiega a cosa servono "
+                "basandoti sul contesto fornito.\n"
+                "3. Evita suggerimenti generici come 'suddividere il file' a meno che non sia richiesto.\n"
+                "4. Se vedi codice sorgente, usalo per rispondere, non dire che non puoi fornire una risposta."
             )
 
             response = ollama.chat(model=self.model_name, messages=[
-                {
-                    'role': 'system', # definisco il comportamento dell'ai
-                    'content': system_content
-                },
-                {
-                    'role': 'user', # passo la domanda e i dati
-                    'content': context_text,
-                },
+                {'role': 'system', 'content': system_content},
+                {'role': 'user', 'content': context_text},
             ])
-            # restituisce solo il testo della risposta generata
             return response['message']['content']
             
         except Exception as e:
-            return f" Errore durante la generazione Vitali-Style: {e}"
+            return f" Errore Synthesizer: {e}"
 
     def _prepare_prompt(self, question, context_code, context_commits, analytics_report):
         """
-        crea il mega-testo che contiene la domanda e le prove trovate nel db
+        Formatta il prompt finale dividendo i blocchi con separatori chiari.
         """
-        
         prompt = f"""
-        ### DOMANDA DELL'UTENTE
-        {question}
+### DOMANDA UTENTE
+{question}
 
-        ### CONTESTO TECNICO (DOCUMENTI DI CODICE)
-        {self._format_code(context_code)}
+### CONTESTO CODICE (DOCUMENTI ESTRATTI DAL GRAFO)
+{self._format_code(context_code)}
 
-        ### DATI ANALITICI E STATISTICHE
-        Esperti: {analytics_report.get('experts', 'N/D')}
-        File critici (Hotspots): {analytics_report.get('hotspots', 'N/D')}
+### STATISTICHE PROGETTO
+{analytics_report}
 
-        ### STORIA DELLE MODIFICHE (COMMIT)
-        {self._format_commits(context_commits)}
+### STORIA RECENTE (COMMIT)
+{self._format_commits(context_commits)}
 
-        ---
-        ISTRUZIONE: Usa i DOCUMENTI sopra per fornire la risposta. 
-        Se il codice richiesto è presente, incollalo tutto. 
-        Se vedi file estranei (come leapyear.py) che non c'entrano con la cartella richiesta, ignorali.
-        """
+---
+ISTRUZIONE FINALE: Basandoti esclusivamente sui documenti sopra, rispondi alla domanda. 
+Se è richiesto il codice, mostralo tutto. Se è una cartella, descrivi la sua struttura.
+"""
         return prompt
 
     def _format_code(self, nodes):
-        """Formatta i nodi: blocchi di codice separati e titolati con verifica del contenuto"""
-        if not nodes: return "Nessun file di codice trovato nel database."
+        """Formatta i nodi con protezione TOTALE per contenuti vuoti (None)"""
+        if not nodes: return "Nessun file trovato."
         
         output = []
         for n in nodes:
-            name = n.get('name', 'Sconosciuto')
-            content = n.get('content', '').strip()
-            path = n.get('path', n.get('file', 'N/A'))
-            ctype = n.get('type', 'Elemento')
-
-            # se il contenuto è troppo corto o è solo il nome del file, lo marchiamo come vuoto
-            # evito che stringhe tipo folder o file vengano scambiate per codice
-            if len(content) < 35 and name in content:
-                content = ""
-
-            if content:
-                block = (
-                    f"--- INIZIO DOCUMENTO: {name} ---\n"
-                    f"TIPO: {ctype}\n"
-                    f"PERCORSO: {path}\n"
-                    f"CONTENUTO:\n{content}\n"
-                    f"--- FINE DOCUMENTO: {name} ---"
-                )
+            name = n.get('name', 'N/A')
+            path = n.get('path', 'N/A')
+            
+            # PROTEZIONE: Se content è None (NULL nel DB), usiamo stringa vuota prima di fare .strip()
+            raw_content = n.get('content')
+            content = raw_content.strip() if raw_content else ""
+            
+            # Se il contenuto è presente (almeno un po' di testo o lista file dalla cartella)
+            if content and len(content) > 5:
+                block = f"--- INIZIO ELEMENTO: {name} ---\nPERCORSO: {path}\nINFO/CONTENUTO:\n{content}\n--- FINE ELEMENTO: {name} ---"
                 output.append(block)
             else:
-                output.append(f"STRUTTURA: {name} | PERCORSO: {path} | (Contenuto codice non disponibile o file vuoto)")
+                output.append(f"STRUTTURA: {name} (Il contenuto di questo elemento non è disponibile o è vuoto)")
         
         return "\n\n".join(output)
 
     def _format_commits(self, commits):
-        """trasforma i commit in una lista dettagliata per l'autore"""
-        if not commits: return "Nessuna cronologia disponibile per questo contesto."
-        return "\n".join([f"- {c.get('author')}: {c.get('message')} ({c.get('date')})" for c in commits])
+        if not commits: return "Nessuna cronologia disponibile."
+        return "\n".join([f"- {c.get('author')}: {c.get('message')}" for c in commits])

@@ -28,6 +28,7 @@ class NSRProcessor:
         clean_keywords = [k for k in keywords if len(k) > 3]
 
         # 2. RICERCA VETTORIALE SUL CODICE 
+        # se n è una folder, recuperiamo i nomi dei file figli (contains)
         vector_query = """
         MATCH (n)
         WHERE (n:CodeEntity OR n:script OR n:File OR n:Folder OR n:file OR n:folder) 
@@ -40,26 +41,41 @@ class NSRProcessor:
                   sqrt(reduce(l2v = 0.0, i IN range(0, size($vector)-1) | l2v + $vector[i] * $vector[i])))
              ELSE 0.0 END AS vector_score
         
-        // --- LOGICA DI BOOSTING ---
+        // --- LOGICA DI BOOSTING POTENZIATA ---
         WITH n, vector_score,
              CASE 
-                // Bonus se il nome corrisponde (es. Ball_bouncing_simulator)
-                WHEN any(word IN $keywords WHERE toLower(n.name) CONTAINS word) THEN 0.95
-                // Bonus fondamentale: se il percorso contiene le parole chiave (cattura i moduli/cartelle)
-                WHEN any(word IN $keywords WHERE n.path IS NOT NULL AND toLower(n.path) CONTAINS word) THEN 0.85
-                // Bonus generico sul contenuto
-                WHEN any(word IN $keywords WHERE toLower(n.content) CONTAINS word) THEN 0.40
+                // PRIORITÀ 1: Match esatto/parziale sul nome del FILE o FOLDER (Bonus altissimo +1.5)
+                WHEN (n:File OR n:file OR n:script OR n:Folder OR n:folder) AND any(word IN $keywords WHERE toLower(n.name) CONTAINS word) THEN 1.5
+                
+                // PRIORITÀ 2: Match sul nome di una funzione/classe (Bonus +0.95)
+                WHEN n:CodeEntity AND any(word IN $keywords WHERE toLower(n.name) CONTAINS word) THEN 0.95
+                
+                // PRIORITÀ 3: Match nel percorso/folder (Bonus +0.70)
+                WHEN any(word IN $keywords WHERE n.path IS NOT NULL AND toLower(n.path) CONTAINS word) THEN 0.70
+                
+                // PRIORITÀ 4: Match nel contenuto del codice (Bonus +0.30)
+                WHEN any(word IN $keywords WHERE toLower(n.content) CONTAINS word) THEN 0.30
                 ELSE 0.0 
              END AS text_bonus
         
         WITH n, (vector_score + text_bonus) AS final_score
-        WHERE final_score > 0.30
+        WHERE final_score > 0.45  
+        
+        // --- ESPANSIONE CONTESTO GRAFO ---
+        // Se è una cartella, cerchiamo i file contenuti per popolare la descrizione
+        OPTIONAL MATCH (n)-[:CONTAINS]->(f:File)
+        WITH n, final_score, collect(f.name) as child_files
         
         RETURN 
             n.name AS name, 
             labels(n)[0] AS type,
-            n.content AS content,  // Restituiamo il contenuto reale senza CASE truffaldini
-            n.path AS path,        // Necessario per il Synthesizer
+            CASE 
+                WHEN (n:Folder OR n:folder) AND size(child_files) > 0 
+                THEN "Cartella del progetto. File contenuti: " + 
+                     reduce(s = "", name IN child_files | s + (CASE WHEN s = "" THEN "" ELSE ", " END) + name)
+                ELSE n.content 
+            END AS content,  
+            n.path AS path,        
             final_score AS score
         ORDER BY score DESC
         LIMIT $limit
@@ -72,12 +88,12 @@ class NSRProcessor:
             "limit": top_k
         })
 
-        # --- LOG DI DEBUG PER IL MANOVRATORE ---
+        # --- LOG PER MANOVRATORE ---
         print(f"\n[DEBUG NSR] Ricerca Ibrida per: '{user_query}'")
         print(f"[DEBUG NSR] Risultati codice trovati: {len(code_results)}")
         for idx, res in enumerate(code_results):
             # controllo rapido se il contenuto è arrivato
-            has_content = "SI" if res.get('content') and len(res['content']) > 20 else "NO"
+            has_content = "SI" if res.get('content') and len(res['content']) > 5 else "NO"
             print(f"  {idx+1}. {res['name']} [{res['type']}] - Score: {res['score']:.4f} - Codice: {has_content}")
 
         # 3. RICERCA CONTESTUALE SUI COMMIT (HISTORY)

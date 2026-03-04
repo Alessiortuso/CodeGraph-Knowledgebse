@@ -29,10 +29,11 @@ class GraphBuilder:
         parts = normalized_path.split('/')
         file_name = parts[-1]
 
-        # 2. CREAZIONE GERARCHIA FOLDER
+        # 2. CREAZIONE GERARCHIA FOLDER (Essenziale per l'NSR)
         if len(parts) > 1:
             dir_path = "/".join(parts[:-1])
             dir_name = parts[-2]
+            # Usiamo :Folder (maiuscolo) per coerenza con l'NSR
             self.client.execute_query("""
                 MERGE (d:Folder {path: $path, project: $project})
                 SET d.name = $name
@@ -43,7 +44,7 @@ class GraphBuilder:
             MERGE (f:File {path: $path, project: $project})
             SET f.name = $name, 
                 f.url = $url,
-                f.content = $content  // <--- PROPRIETÀ AGGIUNTA ORA
+                f.content = $content
         """, {
             "path": normalized_path,
             "project": project_name,
@@ -52,24 +53,23 @@ class GraphBuilder:
             "content": file_content 
         })
 
-        # colleghiamo il file alla sua cartella
+        # COLLEGARE IL FILE ALLA SUA CARTELLA
+        # Modificato :CONTAINS_FILE in :CONTAINS per allineamento con NSRProcessor
         if len(parts) > 1:
             dir_path = "/".join(parts[:-1])
             self.client.execute_query("""
                 MATCH (d:Folder {path: $path, project: $project})
                 MATCH (f:File {path: $f_path, project: $project})
-                MERGE (d)-[:CONTAINS_FILE]->(f)
+                MERGE (d)-[:CONTAINS]->(f)
             """, {"path": dir_path, "f_path": normalized_path, "project": project_name})
 
         # 4. CREAZIONE CODE ENTITIES (funzioni, classi, ecc)
-        current_class_node = None # serve per tracciare la gerarchia Classe -> Metodo
+        current_class_node = None 
 
         for node in nodes:
-            # genero l'embedding del singolo blocco, molto più sicuro e veloce
             embedding = self.embedder.get_embedding(node.content)
             
-            # se il parser ha identificato uno script piatto, aggiungiamo la label :script
-            # questo permette al NSRProcessor di trovarlo istantaneamente
+            # Label extra per script piatti (migliora la ricerca)
             extra_label = ":script" if node.type == "script" else ""
             
             query = f"""
@@ -93,11 +93,10 @@ class GraphBuilder:
                 "embedding": embedding
             })
 
-            # --- LOGICA GERARCHICA ---
+            # --- LOGICA GERARCHICA CLASSE -> METODO ---
             if node.type == "class":
                 current_class_node = node.name
             elif node.type == "function" and current_class_node:
-                # colleghiamo il metodo alla classe
                 rel_class_query = """
                 MATCH (c:CodeEntity {name: $class_name, type: 'class', file: $path, project: $project})
                 MATCH (m:CodeEntity {name: $method_name, type: 'function', file: $path, project: $project})
@@ -133,7 +132,6 @@ class GraphBuilder:
         for c in commits:
             commit_vector = self.embedder.get_embedding(c['message'])
 
-            # 1. creazione nodo Commit
             query_commit = """
             MERGE (c:Commit {hash: $hash, project: $project})
             SET c.author = $author,
@@ -152,7 +150,6 @@ class GraphBuilder:
                 "embedding": commit_vector
             })
 
-            # 2. collegamento MODIFIED
             for file_path in c['files_changed']:
                 git_path = file_path.replace('\\', '/')
                 git_file_name = git_path.split('/')[-1]
