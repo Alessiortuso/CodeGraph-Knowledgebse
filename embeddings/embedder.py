@@ -1,3 +1,12 @@
+# lo scopo è trasformare il testo (codice o domande dell utente) in vettori numerici
+# utilizza ollama e il modello nomic-embed-text per creare rappresentazioni matematiche
+# del significato del codice, permettendo la ricerca semantica nel database memgraph 
+# uesto modulo abilita la ricerca semantica. 
+# a differenza di una ricerca classica, l'embedding cattura il concetto.
+# il modello nomic-embed-text trasforma il testo in un vettore 
+# in uno spazio multidimensionale: pezzi di codice con scopi simili 
+# finiranno "vicini" in questo spazio.
+
 import ollama
 
 class CodeEmbedder:
@@ -5,27 +14,34 @@ class CodeEmbedder:
     questa classe trasforma i pezzi di codice in embeddings
     """
     def __init__(self):
+        # usiamo nomic perche è un modello leggero e molto bravo a gestire i contesti di ricerca
         self.model = "nomic-embed-text"
-        # metto max chars a 3000 per garantire che, inclusi i token speciali, 
-        # non si superi mai il limite hardware/software di Ollama
+        # mettiamo un limite di caratteri per evitare di mandare troppi dati a ollama
+        # 3000 caratteri sono un buon compromesso tra precisione e velocità
         self.max_chars = 3000 
-        print(f"Embedder locale pronto (Modello: {self.model})")
+        print(f"embedder locale pronto (modello: {self.model})")
 
     def get_embedding(self, text, is_query=False):
+        # se il testo è vuoto non facciamo nulla e restituiamo none
         if not text or text.strip() == "":
             return None
             
         try:
             # 1. pulizia aggressiva degli spazi cosi riduco drasticamente il numero di token
             # trasformo tutti i whitespace (tab, multiple newline) in spazi singoli
+            # questo serve perché ai modelli di embedding non interessa la formattazione ma il contenuto
             clean_text = " ".join(text.split())
             
-            # 2. applicazione del prefisso richiesto da Nomic
+            # 2. applicazione del prefisso richiesto da nomic
+            # questo modello vuole sapere se stiamo salvando un documento o facendo una domanda
+            # search_query si usa per la domanda dell utente, search_document per il codice nel db
             prefix = "search_query: " if is_query else "search_document: "
             
             # 3. taglio di sicurezza a 3000 caratteri
+            # assembliamo il testo col prefisso e lo tagliamo se è troppo lungo
             safe_text = (prefix + clean_text)[:self.max_chars]
 
+            # chiamiamo ollama per ottenere la lista di numeri (l embedding)
             response = ollama.embeddings(
                 model=self.model,
                 prompt=safe_text
@@ -33,5 +49,6 @@ class CodeEmbedder:
             return response['embedding']
             
         except Exception as e:
-            print(f"Errore Ollama (Lunghezza testo: {len(text)}): {e}")
+            # se ollama è spento o c è un errore, lo scriviamo ma non facciamo crashare il programma
+            print(f"errore ollama (lunghezza testo: {len(text)}): {e}")
             return None

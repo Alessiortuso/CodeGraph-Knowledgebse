@@ -1,34 +1,44 @@
 import os
 from gqlalchemy import Memgraph
 
+# serve per gestire la comunicazione tra python e il database memgraph
+# questo modulo funge da ponte unico: si occupa di connettersi al db,
+# gestire le variabili di configurazione (host/port) e inviare le query cypher
+# catturando eventuali errori per non far crashare l'intera applicazione
 class GraphClient:
     def __init__(self, host=None, port=None):
-        # 1. Controlla se esistono variabili d'ambiente (impostate da Docker)
-        # 2. Se non esistono, usa i valori di default (per esecuzione locale)
+        # 1. controllo se esistono variabili d ambiente, impostate per esempio da docker
+        # 2. se non esistono uso i valori di default (127.0.0.1 è l'indirizzo del pc locale)
+        # questo serve perché se domani sposto il database su un altro server non devi cambiare il codice
         env_host = os.environ.get("MEMGRAPH_HOST", "127.0.0.1")
         env_port = int(os.environ.get("MEMGRAPH_PORT", 7687))
 
-        # Se passi host/port manualmente nell'init hanno la precedenza, 
-        # altrimenti usa quelli dell'ambiente
+        # se nel codice scrivo GraphClient("mioserver.com") uso quello passato a mano
+        # altrimenti prendo quello automatico che arriva dal sistema o dall ambiente
         self.host = host if host else env_host
         self.port = port if port else env_port
 
-        # Inizializza la connessione
+        # qui inizializzo la connessione vera e propria usando la libreria gqlalchemy
+        # memgraph usa il protocollo bolt sulla porta 7687 di default
         self.memgraph = Memgraph(self.host, self.port)
-        print(f"Connesso a Memgraph su {self.host}:{self.port}")
+        print(f"connesso a memgraph su {self.host}:{self.port}")
 
     def execute_query(self, query, parameters=None):
         """
-        Esegue una query Cypher e restituisce i risultati.
+        esegue una query cypher e restituisce i risultati come una lista pulita
         """
         try:
-            # Usiamo execute_and_fetch per ottenere i risultati come lista
+            # usiamo execute_and_fetch che è il comando per dire a memgraph: 
+            # "fai questa operazione e portami indietro i risultati"
+            # usiamo list() per trasformare il generatore in una lista manipolabile subito
             return list(self.memgraph.execute_and_fetch(query, parameters))
         except Exception as e:
-            # Stampiamo l'errore specifico così capiamo cosa non va
-            print(f"Errore nell'esecuzione della query: {e}")
+            # se scrivo una query sbagliata (errore di sintassi cypher) 
+            # catturo l errore qui così posso leggerlo nel terminale senza che il programma si chiuda
+            print(f"errore nell esecuzione della query: {e}")
             return []
 
     def close(self):
-        # Metodo per chiudere la connessione, gestito internamente da gqlalchemy
+        # metodo per chiudere la connessione se necessario
+        # con gqlalchemy di solito non serve farlo a mano perché gestisce tutto lui
         pass

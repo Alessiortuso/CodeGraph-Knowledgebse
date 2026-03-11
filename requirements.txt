@@ -17,3 +17,6 @@ tree-sitter-javascript
 
 # Utility (spesso usate nei moduli di analisi)
 python-dotenv
+
+PyPDF2
+python-docx

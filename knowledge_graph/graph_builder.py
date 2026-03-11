@@ -1,3 +1,7 @@
+# lo scopo è trasformare i dati estratti dal parser in nodi e relazioni dentro memgraph
+# crea una gerarchia che va dalle cartelle ai file, fino alle singole funzioni e classi
+# gestisce anche il salvataggio dei commit per tenere traccia di chi ha modificato cosa
+
 from .graph_client import GraphClient
 from embeddings.embedder import CodeEmbedder
 import os
@@ -5,44 +9,97 @@ import os
 class GraphBuilder:
     """
     questa classe trasforma i dati estratti dal parser in una struttura gerarchica
-    Folder -> File -> CodeEntity
+    folder -> file -> codeentity
     """
     def __init__(self, client: GraphClient, embedder: CodeEmbedder):
+        # salviamo i riferimenti al client del db e all'embedder per creare i vettori numerici
         self.client = client
         self.embedder = embedder
+
+    def _normalize_project_name(self, project_name):
+        """
+        Normalizza il nome del progetto per evitare discrepanze tra URL e nomi semplici.
+        """
+        if "/" in project_name or "http" in project_name:
+            return project_name.split("/")[-1].replace(".git", "").upper()
+        return project_name.upper()
 
     def clear_project(self, project_name):
         """
         rimuove tutti i nodi di un progetto specifico prima di una nuova ingestion
         """
-        query = "MATCH (n {project: $project_name}) DETACH DELETE n"
+        project_name = self._normalize_project_name(project_name)
+        # usiamo detach delete per eliminare i nodi e tutte le loro relazioni in un colpo solo
+        query = "match (n {project: $project_name}) detach delete n"
         self.client.execute_query(query, {"project_name": project_name})
-        print(f"Dati del progetto '{project_name}' rimossi.")
+        print(f"dati del progetto '{project_name}' rimossi.")
+
+    def save_document(self, project_name, file_path, chunks):
+        """
+        NUOVO: salva i file di documentazione (PDF, Word, MD) nel grafo.
+        divide il documento in pezzi (chunk) per permettere ricerche mirate.
+        """
+        project_name = self._normalize_project_name(project_name)
+        normalized_path = file_path.replace(os.sep, '/')
+        file_name = normalized_path.split('/')[-1]
+
+        # 1. creiamo il nodo principale del documento
+        self.client.execute_query("""
+            merge (d:Document {path: $path, project: $project})
+            set d.name = $name, d.type = 'documentation'
+        """, {"path": normalized_path, "project": project_name, "name": file_name})
+
+        # 2. per ogni pezzo di testo (chunk), creiamo un nodo collegato
+        # questo serve per "assimilare informazioni" in modo granulare come vuole la traccia
+        for i, text in enumerate(chunks):
+            # creiamo il vettore per il pezzo di testo
+            vector = self.embedder.get_embedding(text)
+            
+            query_chunk = """
+                match (d:Document {path: $path, project: $project})
+                create (c:DocChunk {project: $project, index: $idx})
+                set c.content = $content,
+                    c.embedding = $embedding
+                merge (d)-[:has_chunk]->(c)
+            """
+            self.client.execute_query(query_chunk, {
+                "path": normalized_path,
+                "project": project_name,
+                "idx": i,
+                "content": text,
+                "embedding": vector
+            })
+        print(f"   > documento {file_name} salvato con {len(chunks)} frammenti.")
 
     def save_nodes(self, project_name, file_path, nodes, repo_url, file_content):
         """
         crea la struttura gerarchica nel database
-        garantisce la creazione del nodo File e dei nodi CodeEntity collegati
+        garantisce la creazione del nodo file e dei nodi codeentity collegati
         """
+        project_name = self._normalize_project_name(project_name)
+        
         # 1. normalizzazione percorsi
+        # trasformiamo i backslash di windows in slash normali per non avere problemi di compatibilità
         normalized_path = file_path.replace(os.sep, '/')
         parts = normalized_path.split('/')
         file_name = parts[-1]
 
-        # 2. CREAZIONE GERARCHIA FOLDER (Essenziale per l'NSR)
+        # 2. creazione gerarchia folder (essenziale per l'nsr)
+        # se il file è dentro delle cartelle, creiamo il nodo folder per la navigazione
         if len(parts) > 1:
             dir_path = "/".join(parts[:-1])
             dir_name = parts[-2]
-            # Usiamo :Folder (maiuscolo) per coerenza con l'NSR
+            # usiamo merge per evitare di creare la stessa cartella più volte
             self.client.execute_query("""
-                MERGE (d:Folder {path: $path, project: $project})
-                SET d.name = $name
+                merge (d:Folder {path: $path, project: $project})
+                set d.name = $name
             """, {"path": dir_path, "project": project_name, "name": dir_name})
 
-        # 3. CREAZIONE NODO FILE 
+        # 3. creazione nodo file 
+        # salviamo il contenuto integrale del file e il suo url github
         self.client.execute_query("""
-            MERGE (f:File {path: $path, project: $project})
-            SET f.name = $name, 
+            merge (f:File {path: $path, project: $project})
+            set f.name = $name, 
                 f.url = $url,
                 f.content = $content
         """, {
@@ -53,34 +110,38 @@ class GraphBuilder:
             "content": file_content 
         })
 
-        # COLLEGARE IL FILE ALLA SUA CARTELLA
-        # Modificato :CONTAINS_FILE in :CONTAINS per allineamento con NSRProcessor
+        # collegare il file alla sua cartella
+        # creiamo la relazione :contains che l'nsr usa per capire la struttura del progetto
         if len(parts) > 1:
             dir_path = "/".join(parts[:-1])
             self.client.execute_query("""
-                MATCH (d:Folder {path: $path, project: $project})
-                MATCH (f:File {path: $f_path, project: $project})
-                MERGE (d)-[:CONTAINS]->(f)
+                match (d:Folder {path: $path, project: $project})
+                match (f:File {path: $f_path, project: $project})
+                merge (d)-[:contains]->(f)
             """, {"path": dir_path, "f_path": normalized_path, "project": project_name})
 
-        # 4. CREAZIONE CODE ENTITIES (funzioni, classi, ecc)
+        # 4. creazione code entities (funzioni, classi, ecc)
+        # usiamo questa variabile per ricordarci se siamo dentro una classe mentre scorriamo i nodi
         current_class_node = None 
 
         for node in nodes:
+            # creiamo il vettore (embedding) del codice della funzione o classe
             embedding = self.embedder.get_embedding(node.content)
             
-            # Label extra per script piatti (migliora la ricerca)
+            # se è un file senza funzioni lo marchiamo come :script per trovarlo meglio
             extra_label = ":script" if node.type == "script" else ""
             
+            # USIAMO MERGE SULL'ENTITÀ PER ESSERE PIÙ ROBUSTI
             query = f"""
-            MATCH (f:File {{path: $path, project: $project}})
-            MERGE (ce:CodeEntity{extra_label} {{name: $name, type: $type, file: $path, project: $project}})
+            MERGE (ce:CodeEntity{extra_label} {{name: $name, file: $path, project: $project}})
             SET ce.content = $content,
+                ce.type = $type,
                 ce.start_line = $start_line,
                 ce.end_line = $end_line,
                 ce.embedding = $embedding
-            MERGE (f)-[:CONTAINS_ENTITY]->(ce)
-            RETURN ce
+            WITH ce
+            MATCH (f:File {{path: $path, project: $project}})
+            MERGE (f)-[:contains_entity]->(ce)
             """
             self.client.execute_query(query, {
                 "name": node.name,
@@ -93,14 +154,20 @@ class GraphBuilder:
                 "embedding": embedding
             })
 
-            # --- LOGICA GERARCHICA CLASSE -> METODO ---
+            # forza l'etichetta specifica del tipo (tipo :function o :class) per le query mirate
+            self.client.execute_query(f"MATCH (ce:CodeEntity {{name: $name, file: $path, project: $project}}) SET ce:{node.type}", 
+                                    {"name": node.name, "path": normalized_path, "project": project_name})
+
+            # --- logica gerarchica classe -> metodo ---
+            # se il nodo è una classe, lo salviamo come padre dei prossimi metodi che troveremo
             if node.type == "class":
                 current_class_node = node.name
             elif node.type == "function" and current_class_node:
+                # se è una funzione e siamo dentro una classe, creiamo la relazione :has_method
                 rel_class_query = """
-                MATCH (c:CodeEntity {name: $class_name, type: 'class', file: $path, project: $project})
-                MATCH (m:CodeEntity {name: $method_name, type: 'function', file: $path, project: $project})
-                MERGE (c)-[:HAS_METHOD]->(m)
+                match (c:CodeEntity {name: $class_name, type: 'class', file: $path, project: $project})
+                match (m:CodeEntity {name: $method_name, type: 'function', file: $path, project: $project})
+                merge (c)-[:has_method]->(m)
                 """
                 self.client.execute_query(rel_class_query, {
                     "class_name": current_class_node,
@@ -109,14 +176,16 @@ class GraphBuilder:
                     "project": project_name
                 })
 
-            # 5. RELAZIONI TRA ENTITÀ (CALLS)
+            # 5. relazioni tra entità (calls)
+            # qui creiamo le frecce tra chi chiama e chi viene chiamato
             for call_name in node.calls:
                 rel_query = """
-                MATCH (caller:CodeEntity {name: $name, file: $path, project: $project})
-                MERGE (called:CodeEntity {name: $call_name, project: $project})
-                ON CREATE SET called.type = 'unresolved_external'
-                MERGE (caller)-[:CALLS]->(called)
+                match (caller:CodeEntity {name: $name, file: $path, project: $project})
+                merge (called:CodeEntity {name: $call_name, project: $project})
+                on create set called.type = 'unresolved_external'
+                merge (caller)-[:calls]->(called)
                 """
+                # se la funzione chiamata non è nel nostro database, la marchiamo come 'unresolved_external'
                 self.client.execute_query(rel_query, {
                     "name": node.name,
                     "path": normalized_path,
@@ -128,13 +197,15 @@ class GraphBuilder:
         """
         salva i commit e li collega ai nodi file modificati
         """
-        print(f"Salvataggio di {len(commits)} commit...")
+        project_name = self._normalize_project_name(project_name)
+        print(f"salvataggio di {len(commits)} commit...")
         for c in commits:
+            # creiamo l'embedding del messaggio del commit per poterlo cercare semanticamente
             commit_vector = self.embedder.get_embedding(c['message'])
 
             query_commit = """
-            MERGE (c:Commit {hash: $hash, project: $project})
-            SET c.author = $author,
+            merge (c:Commit {hash: $hash, project: $project})
+            set c.author = $author,
                 c.email = $email,
                 c.date = $date,
                 c.message = $message,
@@ -150,15 +221,16 @@ class GraphBuilder:
                 "embedding": commit_vector
             })
 
+            # per ogni commit, cerchiamo i file che sono stati toccati e creiamo il legame :modified
             for file_path in c['files_changed']:
                 git_path = file_path.replace('\\', '/')
                 git_file_name = git_path.split('/')[-1]
 
                 rel_query = """
-                MATCH (c:Commit {hash: $hash, project: $project})
-                MATCH (f:File {project: $project})
-                WHERE f.path ENDS WITH $file_path OR f.name = $file_name
-                MERGE (c)-[:MODIFIED]->(f)
+                match (c:Commit {hash: $hash, project: $project})
+                match (f:File {project: $project})
+                where f.path ends with $file_path or f.name = $file_name
+                merge (c)-[:modified]->(f)
                 """
                 self.client.execute_query(rel_query, {
                     "hash": c['hash'],
@@ -166,4 +238,4 @@ class GraphBuilder:
                     "file_name": git_file_name,
                     "project": project_name
                 })
-        print(f"Salvataggio commit completato.")
+        print(f"salvataggio commit completato.")
