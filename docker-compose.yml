@@ -1,27 +1,38 @@
-version: '3.8'
-
 services:
+  # --- DATABASE GRAPH (Memgraph) ---
+  # Gestisce la persistenza dei nodi e delle relazioni del codice
   memgraph:
-    # Cambiato da mage a platform per avere il Lab nel browser
     image: memgraph/memgraph-platform:latest
     container_name: memgraph_db
     ports:
-      - "7687:7687"
-      - "3000:3000"
-    # L'immagine platform gestisce internamente l'avvio dei log e del Lab
+      - "7687:7687"  # Connessione per il driver Python (Bolt)
+      - "3000:3000"  # Interfaccia grafica Memgraph Lab (Browser)
+    networks:
+      - ai_network
 
+  # --- TUA API FASTAPI (Software Analyzer) ---
+  # Analizza il codice e comunica con l'AI
   app:
     build: .
     container_name: software_analyzer_app
+    ports:
+      - "8000:8000"  # Swagger UI: http://localhost:8000/docs
     tty: true
     stdin_open: true
     depends_on:
       - memgraph
-    volumes:
-      - ./storage:/app/storage
+    # Nota: I volumi sono stati rimossi per evitare errori di mount su Windows/WSL2
     environment:
       - MEMGRAPH_HOST=memgraph
       - MEMGRAPH_PORT=7687
       - OLLAMA_HOST=http://host.docker.internal:11434
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Avvio standard di Uvicorn
+    command: uvicorn main_api:app --host 0.0.0.0 --port 8000
+    networks:
+      - ai_network
+
+networks:
+  ai_network:
+    driver: bridge
