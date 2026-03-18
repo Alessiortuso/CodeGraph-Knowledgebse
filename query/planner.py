@@ -5,6 +5,7 @@
 
 import ollama
 import json
+import re
 
 class QueryPlanner:
     """
@@ -20,16 +21,14 @@ class QueryPlanner:
         trasforma una domanda testuale in un piano d'azione strutturato in json
         """
 
+        # istruzioni bilingue per l llm: capisce il senso a prescindere dalla lingua
         prompt = f"""
         Analyze the following developer query: "{user_query}"
         
         Determine the search strategy based on these rules:
-        - "search_code": true if the query asks about WHAT the code does, HOW it is written, or mentions specific files/modules/functions/patterns.
+        - "search_code": true if the query asks about WHAT the code does, HOW it is written, or mentions specific files/modules/functions/patterns/logic.
         - "search_history": true if the query concerns WHO wrote it, WHEN it changed, or references commits/authors.
         - "use_analytics": true if the query asks for experts, owners, hotspots, or frequently modified/fragile files.
-
-        Example: "Chi ha scritto leapyear.py?" 
-        Output: {{"search_code": true, "search_history": true, "use_analytics": true}}
 
         Respond ONLY with a pure JSON object.
         """
@@ -52,24 +51,45 @@ class QueryPlanner:
                 raise ValueError("nessun json trovato nella risposta dell ai")
 
             # trasformiamo la stringa in un dizionario python
-            plan_json = json.loads(content[start:end])
-            
+            raw = json.loads(content[start:end])
+
+            # normalizziamo: l'llm a volte annida le chiavi (es. {"search_strategy": {...}})
+            # cerchiamo le chiavi attese a qualsiasi livello del json restituito
+            def flatten(d):
+                result = {}
+                for k, v in d.items():
+                    if isinstance(v, dict):
+                        result.update(flatten(v))
+                    else:
+                        result[k] = v
+                return result
+            flat = flatten(raw)
+
+            # costruiamo sempre un piano con tutti e 3 i campi espliciti
+            plan_json = {
+                "search_code":    bool(flat.get("search_code", False)),
+                "search_history": bool(flat.get("search_history", False)),
+                "use_analytics":  bool(flat.get("use_analytics", False)),
+            }
+
             # --- logica di validazione forzata ---
             # è un sistema di sicurezza per garantire che la ricerca funzioni sempre bene
             lower_query = user_query.lower()
 
             # se chiedo CHI, PROPRIETARIO o ESPERTO, la storia e le analytics sono obbligatorie
-            if any(word in lower_query for word in ["chi", "proprietario", "autore", "scritto", "rivolgere", "informazioni", "contattare", "esperto", "leader"]):
+            # include termini inglesi per la compatibilità bilingue
+            if any(word in lower_query for word in ["chi", "who", "proprietario", "owner", "autore", "author", "scritto", "wrote", "esperto", "expert"]):
                 plan_json["search_history"] = True
                 plan_json["use_analytics"] = True
             
-            # se nomino un file o chiedo COSA fa, la ricerca codice deve essere attiva
-            if any(word in lower_query for word in [".py", ".java", ".js", "scritto", "contenuto", "codice", "mostra", "riguarda", "consiste", "funziona", "modulo", "spiega", "pattern", "convenzione"]):
+            # se nomino un file o chiedo come funziona, la ricerca codice deve essere attiva
+            # usa regex per intercettare estensioni file universali
+            file_patterns = [r'\.py', r'\.java', r'\.js', r'codice', r'code', r'funziona', r'how', r'spiega', r'vengono', r'creati']
+            if any(re.search(p, lower_query) for p in file_patterns):
                 plan_json["search_code"] = True
 
-
             # attiva analytics e storia se si parla di modifiche frequenti o instabilità
-            if any(word in lower_query for word in ["fragile", "modificato", "spesso", "instabile", "errore", "bug", "problema", "cambia"]):
+            if any(word in lower_query for word in ["fragile", "modificato", "instabile", "unstable", "hotspot", "risk"]):
                 plan_json["use_analytics"] = True
                 plan_json["search_history"] = True
 

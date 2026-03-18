@@ -1,7 +1,7 @@
 # serve per generare la risposta finale per l utente usando un modello llm 
-# questo modulo agisce come un filtro intelligente: seleziona solo i dati più rilevanti 
-# estratti dal grafo e li organizza in un prompt strutturato (RAG) per garantire 
-# che le risposte siano basate su fatti reali e non su invenzioni (allucinazioni)
+# questo modulo agisce come un filtro intelligente seleziona solo i dati più rilevanti 
+# estratti dal grafo e li organizza in un prompt strutturato per garantire 
+# che le risposte siano basate su fatti reali e non su invenzioni
 
 import ollama
 
@@ -11,6 +11,7 @@ class Synthesizer:
     """
     
     def __init__(self, model_name='llama3'):
+        # inizializza il modello linguistico per la generazione delle risposte
         self.model_name = model_name
         print(f" synthesizer pronto (modello: {self.model_name})")
 
@@ -18,51 +19,70 @@ class Synthesizer:
         """
         riceve i dati e decide cosa inviare all'llm per la massima precisione
         """
+        # trasforma la domanda in minuscolo per facilitare i confronti testuali
         lower_q = question.lower()
 
-        #se l'utente nomina un file, lo cerchiamo nel contesto
-        exact_files = [n for n in context_code if n.get('path') and n.get('path').lower() in lower_q or n.get('name').lower() in lower_q]
+        # logica di filtraggio potenziata per identificare i file richiesti
+        # cerca match esatti o parziali per i file richiesti esplicitamente
+        exact_files = []
+        if context_code:
+            for n in context_code:
+                name = n.get('name')
+                path = n.get('path')
+                
+                # verifica se il nome del file o il suo percorso sono presenti nella domanda
+                if isinstance(name, str):
+                    # pulisce il nome rimuovendo l estensione per un confronto più flessibile
+                    clean_name = name.lower().split('.')[0]
+                    # verifica il match se il nome pulito è nella domanda e ha almeno 4 caratteri
+                    name_match = (clean_name in lower_q and len(clean_name) > 3) or (name.lower() in lower_q)
+                    path_match = isinstance(path, str) and path.lower() in lower_q
+                    
+                    if name_match or path_match:
+                        exact_files.append(n)
         
+        # gestisce la selezione del contesto finale da inviare al modello
         if not context_code:
             filtered_context = []
         elif exact_files:
-            #se troviamo il file richiesto, lo mettiamo in cima e aggiungiamo 1 correlato per contesto
-            other_nodes = [n for n in context_code if n not in exact_files]
-            filtered_context = exact_files + other_nodes[:1]
+            # se trova i file specifici assegna loro la priorità assoluta
+            # esclude i docchunk per evitare che descrizioni generiche confondano il modello
+            other_nodes = [n for n in context_code if n not in exact_files and n.get('type') != 'DocChunk']
+            # compone il contesto finale unendo i file esatti con i primi due nodi correlati
+            filtered_context = exact_files + other_nodes[:2]
             print(f" [match file] Priorità al file richiesto: {[f.get('name') for f in exact_files]}")
         else:
-            #prendo i top 3 risultati per avere sia i file che le funzioni/classi interne
+            # strategia di riserva prende i primi tre risultati se non ci sono match esatti
             filtered_context = context_code[:3]
-            print(f" invio {len(filtered_context)} elementi (codice + documenti) per una risposta completa.")
+            print(f" invio {len(filtered_context)} elementi per una risposta completa.")
 
-        # prepariamo il testo finale (il prompt) che contiene domanda, codice, documenti e commit
-        # lo facciamo in inglese per migliorare il ragionamento del modello sui pattern tecnici
+        # prepara il testo finale del prompt unendo codice analytics e commit
         context_text = self._prepare_prompt(question, filtered_context, context_commits, analytics_report)
 
         try:
+            # definisce le istruzioni di sistema per guidare il comportamento dell architetto
             system_content = (
-                "You are a Senior Software Architect. Your task is to provide technical answers "
-                "based ONLY on the provided context. Answer in ITALIAN.\n\n"
-                
-                "STRICT CODE RULES:\n"
-                "1. FULL EXTRACTION: If the user asks for a file or function, extract the FULL content "
-                "from the 'CONTENT' field without omissions, summaries, or adding external comments.\n"
-                "2. NO HALLUCINATIONS: If information is missing from the context (Code, Commits, or Analytics), "
-                "state it clearly. Do not invent logic, parameters, or file paths.\n"
-                "3. ACCURACY: Maintain the original code formatting and use Markdown blocks with the correct language.\n\n"
-                
-                "ANALYSIS & TEMPORAL RULES:\n"
-                "4. COMMIT DATES: If you mention specific commits or changes, YOU MUST INCLUDE THE DATE "
-                "from the metadata (e.g., 'Author X modified this on YYYY-MM-DD').\n"
-                "5. CAUSAL HOTSPOT ANALYSIS: If you identify critical files (Hotspots) from the analytics_report, "
-                "EXPLAIN WHY they are unstable by correlating their code with commit messages.\n"
-                "6. ARCHITECTURAL CORRELATION: Identify patterns (e.g., MVC, Singleton), naming conventions, and "
-                "implicit links between files.\n\n"
-                
-                "STYLE: Be technical, concise, and precise. Avoid ceremonial introductions or filler text."
+                "You are a source code analyst. Your ONLY job is to answer based EXCLUSIVELY "
+                "on the code and data provided in the user message.\n\n"
+
+                "ABSOLUTE RULES:\n"
+                "1. USE ONLY THE PROVIDED CONTEXT. Never use prior knowledge about libraries, "
+                "frameworks, or common patterns. Read the actual code in the CONTENT fields "
+                "and describe exactly what is written there.\n"
+                "2. NEVER INVENT logic, parameters, file paths, or functions not present in the context.\n"
+                "3. CODE OUTPUT: If a CONTENT field is present for the requested file or function, "
+                "you MUST copy it EXACTLY, character by character, inside a markdown code block. "
+                "NEVER use '# ...' or any placeholder. NEVER skip lines. Output the FULL CONTENT field as-is.\n"
+                "4. MISSING DATA: Only say information is unavailable if there is NO CONTENT field "
+                "at all for the requested item in the context. If a CONTENT field exists — even partial — "
+                "use it. Never apply this rule when code is visible in the context.\n"
+                "5. COMMIT DATES: When referencing commits, always include the date from the metadata.\n"
+                "6. ALWAYS respond in ITALIAN, regardless of the language of the question.\n\n"
+
+                "STYLE: technical, concise, precise. No filler introductions."
             )
 
-            # uso temperature 0.0 per la massima fedeltà ai dati del repository
+            # imposta la temperatura a zero per garantire risposte deterministiche e fedeli
             response = ollama.chat(
                 model=self.model_name, 
                 messages=[
@@ -70,65 +90,92 @@ class Synthesizer:
                     {'role': 'user', 'content': context_text},
                 ],
                 options={
-                    'temperature': 0.0,       # massima precisione deterministica
-                    'num_predict': 2048,      # alto per permettere la scrittura di eventaule codice
-                    'repeat_penalty': 1.1,    #impedisce all'AI di andare in loop
-                    'top_k': 20,
-                    'top_p': 0.9,
-                    'stop': ["###", "---", "CONTEXT:"] #impedisce divagazioni extra
+                    'temperature': 0.0,
+                    'num_predict': 8192,
+                    # disabilita la penalità di ripetizione per permettere la copia esatta del codice
+                    'repeat_penalty': 1.0,
+                    # definisce la sequenza di stop per evitare divagazioni del modello
+                    'stop': ["### END ###"]
                 }
             )
             return response['message']['content'].strip()
             
         except Exception as e:
-            # se l ai ha un problema, restituiamo l errore invece di far crashare tutto
+            # gestisce eventuali errori durante la chiamata al modello linguistico
             return f" errore synthesizer: {e}"
 
     def _prepare_prompt(self, question, context_code, context_commits, analytics_report):
-        """
-        formatta il prompt finale dividendo i blocchi con separatori chiari
-        """
-        # usiamo titoli chiari in inglese perché aiutano l'LLM a mappare la conoscenza strutturata
-        prompt = f"""
-SOURCE DATA (CODE CONTEXT):
+        # organizza i dati estratti in una struttura chiara divisa per sezioni
+        return f"""=== CODICE DEL PROGETTO ===
 {self._format_code(context_code)}
 
-PROJECT METADATA (COMMITS & ANALYTICS):
-{analytics_report}
+=== ANALYTICS ===
+{self._format_analytics(analytics_report)}
+
+=== COMMIT RECENTI ===
 {self._format_commits(context_commits)}
 
-USER QUESTION: 
+=== DOMANDA (RISPONDI IN ITALIANO) ===
 {question}
 
-FINAL ANSWER (IN ITALIAN):
-"""
-        return prompt
+=== RISPOSTA ==="""
 
     def _format_code(self, nodes):
-        """formatta i nodi proteggendo il sistema da contenuti vuoti"""
+        # restituisce un messaggio se non sono stati trovati dati nel database a grafi
         if not nodes: return "nessun dato rilevante trovato nel grafo."
         
         output = []
         for n in nodes:
-            name = n.get('name', 'n/a')
-            path = n.get('path', 'n/a')
-            #recuperiamo il tipo (label) reale per aiutare l'LLM a distinguere file, classi e funzioni
-            ntype = n.get('type', 'elemento')
-            
+            # estrae i metadati principali di ogni nodo trovato
+            name = str(n.get('name') or 'n/a')
+            path = str(n.get('path') or 'n/a')
+            ntype = str(n.get('type') or 'elemento')
             raw_content = n.get('content')
-            content = raw_content.strip() if raw_content else ""
-            
-            if content and len(content) > 5:
-                # creiamo un blocco che specifica chiaramente l'origine dell'informazione
-                block = f"FILE: {name}\nPATH: {path}\nTYPE: {ntype}\nCONTENT:\n{content}\n--- END OF BLOCK ---"
+
+            # formatta il blocco di codice se il contenuto è valido e sufficientemente lungo
+            if isinstance(raw_content, str) and len(raw_content.strip()) > 5:
+                content = raw_content.strip()
+                block = f"FILE: {name}\nPATH: {path}\nTYPE: {ntype}\nCONTENT:\n{content}\n=== END OF BLOCK ==="
                 output.append(block)
             else:
-                output.append(f"struttura rilevata: {name} (tipo: {ntype}, percorso: {path} - contenuto non disponibile)")
+                # segnala la presenza di una struttura senza contenuto visualizzabile
+                output.append(f"struttura: {name} (tipo: {ntype}, percorso: {path} - contenuto non disponibile o frammentato)")
         
+        # unisce i vari blocchi di codice con una doppia spaziatura
         return "\n\n".join(output)
 
+    def _format_analytics(self, report):
+        # gestisce l assenza di dati statistici nel report
+        if not report:
+            return "nessun dato analytics disponibile."
+        lines = []
+        
+        # estrae e formatta le informazioni sui file più modificati nel tempo
+        hotspots = report.get("hotspots", [])
+        if hotspots:
+            lines.append("File più modificati (hotspot):")
+            for h in hotspots:
+                lines.append(f"  - {h.get('file', 'n/a')}: {h.get('modifications', 0)} modifiche")
+        
+        # elenca gli autori con il maggior numero di contributi al progetto
+        experts = report.get("experts", [])
+        if experts:
+            lines.append("Contributori principali:")
+            for e in experts:
+                lines.append(f"  - {e.get('author', 'n/a')}: {e.get('commit_count', 0)} commit")
+        
+        # mostra gli ultimi aggiornamenti registrati nella storia git
+        recent = report.get("recent_activity", [])
+        if recent:
+            lines.append("Attività recente:")
+            for r in recent:
+                lines.append(f"  - [{r.get('date', '?')}] {r.get('author', '?')}: {r.get('msg', '?')}")
+        
+        return "\n".join(lines) if lines else "nessun dato analytics disponibile."
+
     def _format_commits(self, commits):
-        """trasforma la lista dei commit in un elenco puntato leggibile"""
-        if not commits: return "nessuna cronologia git trovata per questi elementi."
-        # data esplicita per permettere all'AI di rispettare la regola temporale
-        return "RECENT_COMMITS:\n" + "\n".join([f"- DATA: {c.get('date')} | AUTORE: {c.get('author')}: {c.get('message')}" for c in commits])
+        # restituisce un messaggio se la lista dei commit è vuota
+        if not commits:
+            return "nessuna cronologia git trovata."
+        # trasforma la lista di oggetti commit in un elenco testuale leggibile
+        return "\n".join([f"- [{c.get('date', '?')}] {c.get('author', '?')}: {c.get('message', '?')}" for c in commits])
