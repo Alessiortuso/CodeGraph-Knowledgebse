@@ -179,13 +179,13 @@ class GraphBuilder:
             # 5. relazioni tra entità (calls)
             # qui creiamo le frecce tra chi chiama e chi viene chiamato
             for call_name in node.calls:
+                # usiamo MATCH per entrambi i nodi: se il chiamato non esiste ancora nel db
+                # la query non fa nulla invece di creare un nodo fantasma senza contenuto né embedding
                 rel_query = """
                 match (caller:CodeEntity {name: $name, file: $path, project: $project})
-                merge (called:CodeEntity {name: $call_name, project: $project})
-                on create set called.type = 'unresolved_external'
+                match (called:CodeEntity {name: $call_name, project: $project})
                 merge (caller)-[:calls]->(called)
                 """
-                # se la funzione chiamata non è nel nostro database, la marchiamo come 'unresolved_external'
                 self.client.execute_query(rel_query, {
                     "name": node.name,
                     "path": normalized_path,

@@ -153,16 +153,8 @@ class CodeGraphParser:
                     full_node.start_byte:full_node.end_byte
                 ].decode("utf8")
 
-                # --- limitatore di contesto ---
-                # se una funzione è gigante (più di 4000 caratteri) la tagliamo
-                # altrimenti l'ai si confonde o finisce la memoria del prompt
-                """inviare file troppo grandi causerebbe il superamento del limite di contesto di ollama, 
-                rendendo l'ai confusa o incapace di rispondere. 
-                per risolvere il problema alla radice, il sistema usa il grafo: invece di leggere un file enorme, 
-                l'ai può navigare tra diverse funzioni collegate. 
-                comunque, 4000 caratteri coprono solitamente la parte più importante di una funzione;"""
-                if len(content) > 4000:
-                    content = content[:4000] + "\n... [codice troncato per limiti di contesto] ..."
+                # nessun troncamento: il contenuto completo viene salvato nel grafo
+                # l'embedder gestisce autonomamente il limite di token tramite num_ctx=8192
 
                 # creiamo l'oggetto codenode con le info complete
                 nodes.append(
@@ -209,9 +201,6 @@ class CodeGraphParser:
             # prendiamo il nome del file come nome dello script
             script_name = os.path.basename(file_path)
             content = source_code
-            if len(content) > 4000:
-                content = content[:4000] + "\n... [codice troncato per limiti di contesto] ..."
-            
             nodes.append(
                 CodeNode(
                     name=script_name,

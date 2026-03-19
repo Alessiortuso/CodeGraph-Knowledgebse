@@ -16,9 +16,11 @@ class CodeEmbedder:
     def __init__(self):
         # usiamo nomic perche è un modello leggero e molto bravo a gestire i contesti di ricerca
         self.model = "nomic-embed-text"
-        # mettiamo un limite di caratteri per evitare di mandare troppi dati a ollama
-        # 3000 caratteri sono un buon compromesso tra precisione e velocità
-        self.max_chars = 3000 
+        # ollama usa num_ctx=2048 token di default anche per i modelli embedding
+        # options={"num_ctx": ...} viene ignorato dall'API embeddings di ollama
+        # 2048 token * ~3 char/token = ~6000 char massimi sicuri
+        # usiamo 5500 per avere un margine di sicurezza
+        self.max_chars = 5500
         print(f"embedder locale pronto (modello: {self.model})")
 
     def get_embedding(self, text, is_query=False):
@@ -41,7 +43,7 @@ class CodeEmbedder:
             # assembliamo il testo col prefisso e lo tagliamo se è troppo lungo
             safe_text = (prefix + clean_text)[:self.max_chars]
 
-            # chiamiamo ollama per ottenere la lista di numeri (l embedding)
+            # chiamiamo ollama per ottenere l embedding
             response = ollama.embeddings(
                 model=self.model,
                 prompt=safe_text
