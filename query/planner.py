@@ -3,9 +3,12 @@
 # serve a capire se dobbiamo cercare nel codice, nella storia dei commit o nelle statistiche,
 # evitando di attivare moduli inutili e risparmiando risorse computazionali
 
-import ollama
+import logging
 import json
 import re
+import ollama
+
+logger = logging.getLogger(__name__)
 
 class QueryPlanner:
     """
@@ -72,7 +75,6 @@ class QueryPlanner:
                 "use_analytics":  bool(flat.get("use_analytics", False)),
             }
 
-            # --- logica di validazione forzata ---
             # è un sistema di sicurezza per garantire che la ricerca funzioni sempre bene
             lower_query = user_query.lower()
 
@@ -95,7 +97,7 @@ class QueryPlanner:
 
             return plan_json
             
-        except Exception as e:
+        except (json.JSONDecodeError, ValueError, ConnectionError, KeyError) as e:
             # strategia di riserva (fallback): se ollama è spento o il json è rotto
-            print(f" errore nel planning: {e}. fallback: modalità ricerca totale attiva.")
+            logger.warning(f"errore nel planning: {e}. fallback: modalità ricerca totale attiva.")
             return {"search_code": True, "search_history": True, "use_analytics": True}

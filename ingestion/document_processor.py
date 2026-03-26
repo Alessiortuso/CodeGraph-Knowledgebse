@@ -5,9 +5,7 @@ import PyPDF2
 from docx import Document
 
 class DocumentProcessor:
-    def __init__(self, embedder):
-        self.embedder = embedder
-
+    
     def extract_text(self, file_path):
         """Riconosce il formato e scarica il testo pulito"""
         if file_path.endswith('.pdf'):

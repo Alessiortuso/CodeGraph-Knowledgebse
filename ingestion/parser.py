@@ -5,9 +5,9 @@ import tree_sitter_javascript as tsjs
 from tree_sitter import Language, Parser, QueryCursor
 from typing import List
 
-# questa classe è una specie di contenitore di dati che rappresenta funzioni, classi o altro
-# ci serve per tenere ordinate le informazioni di ogni pezzo di codice che troviamo
 class CodeNode:
+    # questa classe è una specie di contenitore di dati che rappresenta funzioni, classi o altro
+    # ci serve per tenere ordinate le informazioni di ogni pezzo di codice che troviamo
     def __init__(
         self,
         name: str,           
@@ -103,7 +103,7 @@ class CodeGraphParser:
         language = Language(config["lib"])
         parser = Parser(language)
 
-        # la query è come un filtro che estrae solo le parti che ci interessano (es. def nome():)
+        # la query è come un filtro che estrae solo le parti che ci interessano (es. def blablabla():)
         query_text = config["query"]
 
         # compiliamo la query per renderla veloce
@@ -135,7 +135,8 @@ class CodeGraphParser:
                 flat_captures.append((node, tag))
 
         # ordiniamo i pezzi in base a dove appaiono nel file (start_byte)
-        # così le chiamate a funzione finiscono sotto la funzione che le contiene
+        # così le chiamate a funzione finiscono sotto la funzione stessa, e non possono apparire prima nella lista
+        #quindi in ordine di apparizione come nel file
         flat_captures.sort(key=lambda x: x[0].start_byte)
 
         # processiamo ogni pezzo trovato

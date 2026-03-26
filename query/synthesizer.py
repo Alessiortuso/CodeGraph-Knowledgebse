@@ -122,7 +122,8 @@ class Synthesizer:
 
     def _format_code(self, nodes):
         # restituisce un messaggio se non sono stati trovati dati nel database a grafi
-        if not nodes: return "nessun dato rilevante trovato nel grafo."
+        if not nodes:
+            return "nessun dato rilevante trovato nel grafo."
         
         output = []
         for n in nodes:

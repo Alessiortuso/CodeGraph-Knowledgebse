@@ -2,9 +2,12 @@
 # crea una gerarchia che va dalle cartelle ai file, fino alle singole funzioni e classi
 # gestisce anche il salvataggio dei commit per tenere traccia di chi ha modificato cosa
 
+import logging
+import os
 from .graph_client import GraphClient
 from embeddings.embedder import CodeEmbedder
-import os
+
+logger = logging.getLogger(__name__)
 
 class GraphBuilder:
     """
@@ -24,6 +27,29 @@ class GraphBuilder:
             return project_name.split("/")[-1].replace(".git", "").upper()
         return project_name.upper()
 
+    def create_vector_indexes(self):
+        """
+        crea gli indici vettoriali HNSW in memgraph tramite MAGE.
+        HNSW è un algoritmo che permette di trovare i vettori più simili
+        in modo molto più veloce rispetto a confrontarli tutti uno per uno.
+        va chiamato una volta sola all'avvio: se l'indice esiste già, memgraph lo ignora.
+        """
+        # dimensione dei vettori prodotti da nomic-embed-text
+        vector_size = 768
+
+        indexes = [
+            ("code_entities_idx", "CodeEntity", "embedding"),
+            ("doc_chunks_idx",    "DocChunk",   "embedding"),
+            ("commits_idx",       "Commit",      "embedding"),
+        ]
+
+        for index_name, label, prop in indexes:
+            self.client.execute_query(
+                f"CALL vector_search.create_index('{index_name}', '{label}', '{prop}', {{size: {vector_size}}}) YIELD *",
+                {}
+            )
+            logger.info(f"indice vettoriale '{index_name}' pronto su :{label}({prop})")
+
     def clear_project(self, project_name):
         """
         rimuove tutti i nodi di un progetto specifico prima di una nuova ingestion
@@ -32,7 +58,7 @@ class GraphBuilder:
         # usiamo detach delete per eliminare i nodi e tutte le loro relazioni in un colpo solo
         query = "match (n {project: $project_name}) detach delete n"
         self.client.execute_query(query, {"project_name": project_name})
-        print(f"dati del progetto '{project_name}' rimossi.")
+        logger.info(f"dati del progetto '{project_name}' rimossi.")
 
     def save_document(self, project_name, file_path, chunks):
         """
@@ -50,7 +76,7 @@ class GraphBuilder:
         """, {"path": normalized_path, "project": project_name, "name": file_name})
 
         # 2. per ogni pezzo di testo (chunk), creiamo un nodo collegato
-        # questo serve per "assimilare informazioni" in modo granulare come vuole la traccia
+        # questo serve per assimilare informazioni in modo granulare
         for i, text in enumerate(chunks):
             # creiamo il vettore per il pezzo di testo
             vector = self.embedder.get_embedding(text)
@@ -69,7 +95,7 @@ class GraphBuilder:
                 "content": text,
                 "embedding": vector
             })
-        print(f"   > documento {file_name} salvato con {len(chunks)} frammenti.")
+        logger.info(f"documento {file_name} salvato con {len(chunks)} frammenti.")
 
     def save_nodes(self, project_name, file_path, nodes, repo_url, file_content):
         """
@@ -198,7 +224,7 @@ class GraphBuilder:
         salva i commit e li collega ai nodi file modificati
         """
         project_name = self._normalize_project_name(project_name)
-        print(f"salvataggio di {len(commits)} commit...")
+        logger.info(f"salvataggio di {len(commits)} commit...")
         for c in commits:
             # creiamo l'embedding del messaggio del commit per poterlo cercare semanticamente
             commit_vector = self.embedder.get_embedding(c['message'])
@@ -238,4 +264,4 @@ class GraphBuilder:
                     "file_name": git_file_name,
                     "project": project_name
                 })
-        print(f"salvataggio commit completato.")
+        logger.info("salvataggio commit completato.")

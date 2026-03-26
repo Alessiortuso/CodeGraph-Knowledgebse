@@ -1,13 +1,16 @@
 # lo scopo è trasformare il testo (codice o domande dell utente) in vettori numerici
 # utilizza ollama e il modello nomic-embed-text per creare rappresentazioni matematiche
 # del significato del codice, permettendo la ricerca semantica nel database memgraph 
-# uesto modulo abilita la ricerca semantica. 
-# a differenza di una ricerca classica, l'embedding cattura il concetto.
+# uesto modulo abilita la ricerca semantica
+# a differenza di una ricerca classica, l'embedding cattura il concetto
 # il modello nomic-embed-text trasforma il testo in un vettore 
 # in uno spazio multidimensionale: pezzi di codice con scopi simili 
-# finiranno "vicini" in questo spazio.
+# finiranno "vicini" in questo spazio
 
+import logging
 import ollama
+
+logger = logging.getLogger(__name__)
 
 class CodeEmbedder:
     """
@@ -16,12 +19,9 @@ class CodeEmbedder:
     def __init__(self):
         # usiamo nomic perche è un modello leggero e molto bravo a gestire i contesti di ricerca
         self.model = "nomic-embed-text"
-        # ollama usa num_ctx=2048 token di default anche per i modelli embedding
-        # options={"num_ctx": ...} viene ignorato dall'API embeddings di ollama
-        # 2048 token * ~3 char/token = ~6000 char massimi sicuri
         # usiamo 5500 per avere un margine di sicurezza
         self.max_chars = 5500
-        print(f"embedder locale pronto (modello: {self.model})")
+        logger.info(f"embedder locale pronto (modello: {self.model})")
 
     def get_embedding(self, text, is_query=False):
         # se il testo è vuoto non facciamo nulla e restituiamo none
@@ -39,8 +39,7 @@ class CodeEmbedder:
             # search_query si usa per la domanda dell utente, search_document per il codice nel db
             prefix = "search_query: " if is_query else "search_document: "
             
-            # 3. taglio di sicurezza a 3000 caratteri
-            # assembliamo il testo col prefisso e lo tagliamo se è troppo lungo
+            # 3. assembliamo il testo col prefisso e lo tagliamo se è troppo lungo
             safe_text = (prefix + clean_text)[:self.max_chars]
 
             # chiamiamo ollama per ottenere l embedding
@@ -50,7 +49,7 @@ class CodeEmbedder:
             )
             return response['embedding']
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, KeyError, RuntimeError) as e:
             # se ollama è spento o c è un errore, lo scriviamo ma non facciamo crashare il programma
-            print(f"errore ollama (lunghezza testo: {len(text)}): {e}")
+            logger.error(f"errore ollama (lunghezza testo: {len(text)}): {e}")
             return None

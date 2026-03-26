@@ -2,15 +2,19 @@ import os
 import git
 import shutil
 import stat
-import subprocess  
+import subprocess
+import logging
 from typing import List
 
-# questa classe serve a stampare il progresso della clonazione in tempo reale
-# impedisce al terminale di andare in timeout durante il download
+logger = logging.getLogger(__name__)
+
+
 class CloneProgress(git.RemoteProgress):
+    # questa classe serve a stampare il progresso della clonazione in tempo reale
+    # impedisce al terminale di andare in timeout durante il download
     def update(self, op_code, cur_count, max_count=None, message=''):
         if message:
-            print(f"Progresso Git: {message} ({cur_count}/{max_count or '?'})", end='\r')
+            logger.debug(f"Progresso Git: {message} ({cur_count}/{max_count or '?'})")
 
 class GitProcessor:
     #lo scopo è andare su github e prendere tutto il codice e metterlo in una cartella
@@ -39,31 +43,32 @@ class GitProcessor:
         gestisce lo scaricamento della repository da github o gitlab
         """
         if os.path.exists(target_dir):
-            print(f"cartella esistente trovata, provo a rimuoverla...")
+            logger.info("cartella esistente trovata, provo a rimuoverla...")
             try:
                 # cancello la vecchia versione se esiste per avere i dati sempre aggiornati
                 shutil.rmtree(target_dir, onerror=self._onerror)
-                print("vecchia cartella rimossa.")
-            except Exception as e:
+                logger.info("vecchia cartella rimossa.")
+            except (OSError, PermissionError) as e:
                 # a volte un file è bloccato da un altro processo, in quel caso vado avanti comunque
-                print(f"non sono riuscito a cancellare tutto: {e}")
-                print("provo comunque a procedere...")
+                logger.warning(f"non sono riuscito a cancellare tutto: {e}")
+                logger.warning("provo comunque a procedere...")
 
         # mi assicuro che la cartella che ospiterà il codice (storage) esista sul disco
         os.makedirs(os.path.dirname(target_dir), exist_ok=True)
 
-        print(f"clonazione in corso da: {repo_url}")
+        logger.info(f"clonazione in corso da: {repo_url}")
         try:
-            # uso subprocess.run invece della libreria gitpython perché è più stabile 
+            # uso subprocess.run invece della libreria gitpython perché è più stabile
             # e non si blocca se la repository è molto pesante
             subprocess.run(["git", "clone", repo_url, target_dir], check=True)
-            print("\nclonazione completata")
+            logger.info("clonazione completata")
         except subprocess.CalledProcessError as e:
             # se l'url è sbagliato o manca internet, il programma si ferma qui con un errore critico
-            print(f"\nerrore critico git durante subprocess: {e}")
+            logger.error(f"errore critico git durante subprocess: {e}")
             raise
-        except Exception as e:
-            print(f"\nerrore imprevisto: {e}")
+        except FileNotFoundError as e:
+            # git non è installato o non è nel PATH
+            logger.error(f"eseguibile git non trovato: {e}")
             raise
         return target_dir
 
@@ -88,9 +93,9 @@ class GitProcessor:
                     "files_changed": list(commit.stats.files.keys()) # quali file sono stati toccati
                 })
             
-            print(f"estratta cronologia di {len(commits_data)} commit")
-        except Exception as e:
-            print(f"errore durante l'estrazione dei commit: {e}")
+            logger.info(f"estratta cronologia di {len(commits_data)} commit")
+        except (git.InvalidGitRepositoryError, git.GitCommandError) as e:
+            logger.error(f"errore durante l'estrazione dei commit: {e}")
             
         return commits_data
 
@@ -99,7 +104,7 @@ class GitProcessor:
         naviga nell'albero delle cartelle per trovare solo i file di codice supportati
         """
         valid_files = []
-        print(f"scansione file in corso...")
+        logger.info("scansione file in corso...")
         
         # os.walk entra in ogni singola cartella partendo dalla radice
         for root, dirs, files in os.walk(repo_path):
@@ -115,7 +120,7 @@ class GitProcessor:
                     # creo il percorso completo del file per passarlo al parser
                     valid_files.append(os.path.join(root, file))
         
-        print(f"trovati {len(valid_files)} file supportati")
+        logger.info(f"trovati {len(valid_files)} file supportati")
         return valid_files
 
     def process_repo(self, repo_path: str, parser_instance):
@@ -129,17 +134,17 @@ class GitProcessor:
 
         for i, file_path in enumerate(files, 1):
             # stampo un progresso visivo così so a che punto è l'analisi
-            print(f"[{i}/{total}] analizzando: {os.path.basename(file_path)}", end='\r')
-            
+            logger.debug(f"[{i}/{total}] analizzando: {os.path.basename(file_path)}")
+
             try:
                 # chiamo il CodeGraphParser per estrarre funzioni e classi dal file
                 nodes = parser_instance.parse_file(file_path)
-                
+
                 # salvo tutto in un dizionario organizzato per percorso file
                 repo_data[file_path] = nodes
-            except Exception as e:
+            except (SyntaxError, UnicodeDecodeError, ValueError, RuntimeError) as e:
                 # se un file è scritto male e il parser crasha, lo salto e vado al prossimo
-                print(f"\nerrore nel file {file_path}: {e}")
-        
-        print(f"\nanalisi dei file terminata")
+                logger.warning(f"errore nel file {file_path}: {e}")
+
+        logger.info("analisi dei file terminata")
         return repo_data

@@ -1,8 +1,11 @@
 import os
+import logging
 from .git_processor import GitProcessor
 from .parser import CodeGraphParser
-from .document_processor import DocumentProcessor 
+from .document_processor import DocumentProcessor
 from analytics.commit_analyzer import CommitAnalyzer
+
+logger = logging.getLogger(__name__)
 
 class IngestionController:
     """
@@ -21,7 +24,7 @@ class IngestionController:
         # il processor scarica, il parser analizza, il doc_processor legge i documenti e l analyzer fa i calcoli
         self.processor = GitProcessor()      
         self.parser = CodeGraphParser()      
-        self.doc_processor = DocumentProcessor(embedder)
+        self.doc_processor = DocumentProcessor()
         self.analyzer = CommitAnalyzer(db_client) 
 
     def process_new_repository(self, repo_url, project_name):
@@ -32,12 +35,12 @@ class IngestionController:
         temp_path = f"./storage/{project_name}"
         
         # --- step 1: download ---
-        print(f"--- 1. Clonazione repository: {project_name} ---")
+        logger.info(f"--- 1. Clonazione repository: {project_name} ---")
         # usiamo il processor per clonare la repo e ci facciamo ridare il percorso locale
         local_path = self.processor.clone_repo(repo_url, temp_path)
 
         # --- step 2: analisi e pulizia ---
-        print(f"--- 2. Analisi AST e generazione vettori ---")
+        logger.info("--- 2. Analisi AST e generazione vettori ---")
         # prima di inserire dati nuovi, cancelliamo quelli vecchi per quel progetto nel db
         # serve per evitare di avere doppioni se facciamo l ingestion più volte
         self.builder.clear_project(project_name)
@@ -46,36 +49,36 @@ class IngestionController:
         results = self.processor.process_repo(local_path, self.parser)
 
         # --- step 3: costruzione grafo (Codice) ---
-        print(f"--- 3. Salvataggio CODICE nel Graph DB ---")
+        logger.info("--- 3. Salvataggio CODICE nel Graph DB ---")
         # iteriamo su ogni file analizzato per salvarlo nel database memgraph
         for file_path, nodes in results.items():
             # trasformiamo il percorso assoluto in relativo (tipo src/main.py) per pulizia
-            rel_path = os.path.relpath(file_path, local_path) 
-            
+            rel_path = os.path.relpath(file_path, local_path)
+
             try:
                 # apriamo il file fisico per leggere tutto il codice
                 # lo facciamo qui per passarlo al builder che lo caricherà nel nodo File
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     file_content = f.read()
-                
+
                 # salviamo i nodi di questo file nel grafo (cartelle, file e funzioni)
                 self.builder.save_nodes(project_name, rel_path, nodes, repo_url, file_content)
-                
-            except Exception as e:
+
+            except (OSError, IOError) as e:
                 # se un file non si può leggere, stampiamo l errore e passiamo al prossimo senza crashare
-                print(f"Errore lettura file {file_path}: {e}")
+                logger.warning(f"Errore lettura file {file_path}: {e}")
 
         # cerchiamo file che non sono codice ma documentazione (PDF, Word, Markdown)
         # questo serve per assimilare informazioni provenienti da diverse fonti
-        print(f"--- 3.5 Analisi Documentazione Tecnico-Funzionale ---")
+        logger.info("--- 3.5 Analisi Documentazione Tecnico-Funzionale ---")
         for root, dirs, files in os.walk(local_path):
             for file in files:
                 # controlliamo l'estensione del file
                 if file.lower().endswith(('.pdf', '.docx', '.md', '.txt')):
                     file_path = os.path.join(root, file)
                     rel_path = os.path.relpath(file_path, local_path)
-                    
-                    print(f"   > Estrazione conoscenza da: {file}")
+
+                    logger.info(f"   > Estrazione conoscenza da: {file}")
                     # usiamo il nuovo processor per leggere il testo dal documento
                     doc_text = self.doc_processor.extract_text(file_path)
                     
@@ -86,7 +89,7 @@ class IngestionController:
                         self.builder.save_document(project_name, rel_path, chunks)
 
         # --- step 4: storia git ---
-        print(f"--- 4. Salvataggio storia Git ---")
+        logger.info("--- 4. Salvataggio storia Git ---")
         # recuperiamo i commit per collegare gli autori ai file nel grafo
         commits = self.processor.get_commit_history(local_path)
         self.builder.save_commits(project_name, commits)
@@ -99,21 +102,21 @@ class IngestionController:
         """
         estrae informazioni utili dal database appena popolato
         """
-        print(f"\n--- Generazione Report Analytics ---")
+        logger.info("--- Generazione Report Analytics ---")
 
         # chiediamo all analyzer di trovarci i file più modificati e chi sono gli esperti
         hotspots = self.analyzer.get_hotspots(project_name)
         experts = self.analyzer.get_expertise_map(project_name)
         recent = self.analyzer.get_recent_activity(project_name)
 
-        # stampiamo a video un riassunto per capire subito lo stato del progetto
-        print("\n Hotspots (File più critici):")
+        # logghiamo un riassunto per capire subito lo stato del progetto
+        logger.info("Hotspots (File più critici):")
         for h in hotspots:
-            print(f" - {h['file']} ({h['modifications']} modifiche)")
+            logger.info(f" - {h['file']} ({h['modifications']} modifiche)")
 
-        print("\n Top Contributors (Expertise):")
+        logger.info("Top Contributors (Expertise):")
         for e in experts:
-            print(f" - {e['author']}: {e['commit_count']} commit")
+            logger.info(f" - {e['author']}: {e['commit_count']} commit")
 
         # restituiamo i dati così possono essere usati anche da altri moduli
         return {

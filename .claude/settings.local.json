@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_parser.py -v)",
+      "Bash(ruff --version)",
+      "Bash(pip show:*)",
+      "Bash(python -m ruff --version)",
+      "Bash(python -m pytest tests/ -v)"
+    ]
+  }
+}
