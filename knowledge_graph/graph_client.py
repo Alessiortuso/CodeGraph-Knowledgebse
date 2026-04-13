@@ -28,13 +28,20 @@ class GraphClient:
         esegue una query cypher e restituisce i risultati come una lista pulita
         """
         try:
-            # usiamo execute_and_fetch che è il comando per dire a memgraph: 
+            # usiamo execute_and_fetch che è il comando per dire a memgraph:
             # "fai questa operazione e portami indietro i risultati"
             # usiamo list() per trasformare il generatore in una lista manipolabile subito
             return list(self.memgraph.execute_and_fetch(query, parameters))
         except Exception as e:
-            # se scrivo una query sbagliata (errore di sintassi cypher) 
-            # catturo l errore qui così posso leggerlo nel terminale senza che il programma si chiuda
+            if not str(e):
+                # eccezione senza messaggio: tipico dei DDL (CREATE INDEX, CREATE VECTOR INDEX)
+                # che non restituiscono righe. proviamo con execute() che non si aspetta risultati.
+                try:
+                    self.memgraph.execute(query, parameters)
+                    return []
+                except Exception as e2:
+                    print(f"errore nell esecuzione della query: {e2}")
+                    return []
             print(f"errore nell esecuzione della query: {e}")
             return []
 

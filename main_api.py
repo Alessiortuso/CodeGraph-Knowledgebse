@@ -8,6 +8,9 @@ from ingestion.controller import IngestionController
 from query.planner import QueryPlanner
 from query.nsr_processor import NSRProcessor
 from query.synthesizer import Synthesizer
+from query.onboarding_report import OnboardingReportGenerator
+from analytics.commit_analyzer import CommitAnalyzer
+from analytics.pattern_detector import PatternDetector
 
 # basicConfig va chiamato una sola volta, all'avvio dell'app, e configura il logging per tutti i moduli
 logging.basicConfig(
@@ -81,6 +84,19 @@ except (ConnectionError, ImportError, RuntimeError) as e:
     logger.critical(f"Errore critico durante l'inizializzazione di Synthesizer: {e}")
     sys.exit(1)
 
+# NUOVO: inizializziamo i moduli per onboarding e pattern detection
+# il pattern detector analizza il grafo per trovare convenzioni e architettura implicite
+# l'onboarding generator usa tutti i dati per creare un briefing per i nuovi membri
+commit_analyzer = CommitAnalyzer(client)
+pattern_detector = PatternDetector(client)
+onboarding_generator = OnboardingReportGenerator(client, commit_analyzer, pattern_detector)
+
+# OTTIMIZZAZIONE: cache dei pattern per progetto
+# il pattern_detector esegue query pesanti sul grafo ogni volta che viene chiamato.
+# siccome i pattern cambiano solo dopo una nuova ingestion, li memorizziamo in un dizionario
+# e li invalidiamo solo quando il progetto viene re-ingerito (vedi endpoint /ingest e /update)
+_patterns_cache: dict = {}
+
 logger.info("Tutti i motori AI e il DB sono pronti")
 
 
@@ -118,6 +134,12 @@ def ask_question(
         # A. PLANNING: l ai decide cosa cercare
         plan = planner.plan(question)
 
+        # fallback: se il planner non attiva nessuna ricerca, forziamo search_code
+        # così il synthesizer riceve sempre del contesto invece di inventare
+        if not plan.get("search_code") and not plan.get("search_history"):
+            logger.warning("[ask] planner ha restituito tutti false, forzo search_code=True")
+            plan["search_code"] = True
+
         # B. RETRIEVAL: recupero dati in base al piano
         code_ctx = []
         commit_ctx = []
@@ -131,7 +153,13 @@ def ask_question(
             _, commit_ctx = nsr.search(question, project, top_k=5)
 
         # C. SYNTHESIS: generazione risposta finale
-        risposta = synthesizer.answer(question, code_ctx, commit_ctx, analytics_report)
+        # usiamo la cache dei pattern: se il progetto è già stato analizzato, non ricalcoliamo
+        # i pattern cambiano solo dopo una nuova ingestion (vedi /ingest che invalida la cache)
+        if project not in _patterns_cache:
+            _patterns_cache[project] = pattern_detector.run_full_detection(project)
+        patterns = _patterns_cache[project]
+
+        risposta = synthesizer.answer(question, code_ctx, commit_ctx, analytics_report, patterns)
 
         return {
             "status": "success",
@@ -154,17 +182,59 @@ def ingest_repository(
     name: str = Query(..., description="Nome del progetto"),
 ):
     """
-    Ingestione Nuovo Repository
-    Scarica il codice, crea gli embeddings e popola Memgraph
+    Ingestione Nuovo Repository (sincrona)
+    Aspetta che l'intera ingestion finisca prima di rispondere.
+    Quando ricevi la risposta, il progetto è pronto per le domande.
     """
     try:
-        controller.process_new_repository(url, name)
-        return {"status": "success", "message": f"Ingestione completata per {name}"}
-    except (ValueError, OSError, ConnectionError) as e:
-        logger.error(f"Errore durante l'ingestione di {name}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Errore durante l'ingestione: {str(e)}"
-        )
+        analytics = controller.process_new_repository(url, name)
+        _patterns_cache.pop(name, None)
+        _patterns_cache.pop(name.upper(), None)
+        return {
+            "status": "completed",
+            "project": name,
+            "analytics": analytics,
+        }
+    except Exception as e:
+        logger.error(f"[ingest] fallito per {name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/onboarding")
+def onboarding_report(
+    project: str = Query(..., description="Nome del progetto"),
+):
+    """
+    Report di Onboarding per Nuovi Membri
+    genera una panoramica completa del progetto: architettura, componenti chiave,
+    dipendenze, convenzioni implicite e aree critiche.
+    utile quando un nuovo sviluppatore entra nel progetto e deve capire rapidamente
+    come funziona senza leggere tutto il codice
+    """
+    try:
+        report = onboarding_generator.generate(project)
+        return {"status": "success", "report": report}
+    except Exception as e:
+        logger.error(f"Errore generazione onboarding per {project}: {e}")
+        raise HTTPException(status_code=500, detail=f"Errore: {str(e)}")
+
+
+@app.get("/patterns")
+def get_patterns(
+    project: str = Query(..., description="Nome del progetto"),
+):
+    """
+    Pattern Architetturali e Convenzioni
+    restituisce tutti i pattern impliciti rilevati nel progetto:
+    stile di naming, pattern architetturali (MVC, REST, ecc.),
+    dipendenze esterne critiche e componenti centrali
+    """
+    try:
+        patterns = pattern_detector.run_full_detection(project)
+        return {"status": "success", "project": project, "patterns": patterns}
+    except Exception as e:
+        logger.error(f"Errore analisi pattern per {project}: {e}")
+        raise HTTPException(status_code=500, detail=f"Errore: {str(e)}")
 
 
 @app.put("/update")

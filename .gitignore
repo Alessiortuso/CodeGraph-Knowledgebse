@@ -136,3 +136,28 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# Variabili d'ambiente e segreti
+.env
+.env.local
+*.env
+
+# Claude Code (settings locali con path e permessi personali)
+.claude/
+
+# VSCode (configurazione IDE locale)
+.vscode/
+
+# Repository clonati durante l'ingestion
+storage/
+
+# Note personali con URL, token e dati aziendali
+comandi.txt
+
+# Logs applicazione
+*.log
+logs/
+
+# File di sistema Windows/Mac
+Thumbs.db
+.DS_Store

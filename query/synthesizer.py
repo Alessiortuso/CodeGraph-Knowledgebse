@@ -3,6 +3,7 @@
 # estratti dal grafo e li organizza in un prompt strutturato per garantire 
 # che le risposte siano basate su fatti reali e non su invenzioni
 
+import os
 import ollama
 
 class Synthesizer:
@@ -10,12 +11,13 @@ class Synthesizer:
     esegue il filtering intelligente dei risultati e genera la risposta finale
     """
     
-    def __init__(self, model_name='llama3'):
+    def __init__(self, model_name=None):
+        model_name = model_name or os.environ.get("SYNTHESIZER_MODEL", "llama3")
         # inizializza il modello linguistico per la generazione delle risposte
         self.model_name = model_name
         print(f" synthesizer pronto (modello: {self.model_name})")
 
-    def answer(self, question, context_code, context_commits, analytics_report):
+    def answer(self, question, context_code, context_commits, analytics_report, patterns_report=None):
         """
         riceve i dati e decide cosa inviare all'llm per la massima precisione
         """
@@ -56,8 +58,9 @@ class Synthesizer:
             filtered_context = context_code[:3]
             print(f" invio {len(filtered_context)} elementi per una risposta completa.")
 
-        # prepara il testo finale del prompt unendo codice analytics e commit
-        context_text = self._prepare_prompt(question, filtered_context, context_commits, analytics_report)
+        # prepara il testo finale del prompt unendo codice analytics, commit e pattern rilevati
+        # i pattern arricchiscono il contesto con informazioni architetturali implicite
+        context_text = self._prepare_prompt(question, filtered_context, context_commits, analytics_report, patterns_report)
 
         try:
             # definisce le istruzioni di sistema per guidare il comportamento dell architetto
@@ -77,24 +80,29 @@ class Synthesizer:
                 "at all for the requested item in the context. If a CONTENT field exists — even partial — "
                 "use it. Never apply this rule when code is visible in the context.\n"
                 "5. COMMIT DATES: When referencing commits, always include the date from the metadata.\n"
-                "6. ALWAYS respond in ITALIAN, regardless of the language of the question.\n\n"
+                "6. ALWAYS respond in ITALIAN, regardless of the language of the question.\n"
+                "7. CONDITIONAL LOGIC: When code contains if/else branches, describe EACH branch "
+                "separately. Never describe only one branch as if it were the only code path. "
+                "Example: 'Se X allora... altrimenti...'.\n\n"
 
                 "STYLE: technical, concise, precise. No filler introductions."
             )
 
             # imposta la temperatura a zero per garantire risposte deterministiche e fedeli
+            # num_predict: limitiamo a 1024 token per velocizzare la risposta.
+            # 1024 token ≈ 750 parole: più che sufficiente per risposte tecniche precise.
+            # la versione precedente usava 8192 che rallentava enormemente la generazione
             response = ollama.chat(
-                model=self.model_name, 
+                model=self.model_name,
                 messages=[
                     {'role': 'system', 'content': system_content},
                     {'role': 'user', 'content': context_text},
                 ],
                 options={
                     'temperature': 0.0,
-                    'num_predict': 8192,
+                    'num_predict': 1024,
                     # disabilita la penalità di ripetizione per permettere la copia esatta del codice
                     'repeat_penalty': 1.0,
-                    # definisce la sequenza di stop per evitare divagazioni del modello
                     'stop': ["### END ###"]
                 }
             )
@@ -104,13 +112,18 @@ class Synthesizer:
             # gestisce eventuali errori durante la chiamata al modello linguistico
             return f" errore synthesizer: {e}"
 
-    def _prepare_prompt(self, question, context_code, context_commits, analytics_report):
+    def _prepare_prompt(self, question, context_code, context_commits, analytics_report, patterns_report=None):
         # organizza i dati estratti in una struttura chiara divisa per sezioni
+        # la sezione PATTERN è nuova: fornisce all'llm il contesto architetturale implicito
+        # così può rispondere a domande come "qual è il pattern dominante?" con dati reali
         return f"""=== CODICE DEL PROGETTO ===
 {self._format_code(context_code)}
 
 === ANALYTICS ===
 {self._format_analytics(analytics_report)}
+
+=== PATTERN ARCHITETTURALI RILEVATI ===
+{self._format_patterns(patterns_report)}
 
 === COMMIT RECENTI ===
 {self._format_commits(context_commits)}
@@ -173,6 +186,40 @@ class Synthesizer:
                 lines.append(f"  - [{r.get('date', '?')}] {r.get('author', '?')}: {r.get('msg', '?')}")
         
         return "\n".join(lines) if lines else "nessun dato analytics disponibile."
+
+    def _format_patterns(self, patterns_report):
+        # formatta il report dei pattern rilevati dal pattern_detector
+        # se non ci sono pattern, lo diciamo chiaramente invece di lasciare sezione vuota
+        if not patterns_report:
+            return "analisi pattern non disponibile (eseguire prima l'ingestion del progetto)."
+
+        lines = []
+
+        # pattern architetturali (es. Layered Architecture, REST API)
+        arch = patterns_report.get("architectural_patterns", [])
+        if arch:
+            lines.append("Pattern architetturali:")
+            for p in arch:
+                lines.append(f"  [{p.get('confidence','?').upper()}] {p.get('pattern')}: {p.get('evidence')}")
+
+        # convenzioni di naming rilevate automaticamente
+        naming = patterns_report.get("naming_conventions", {})
+        if naming:
+            lines.append(f"Stile naming: {naming.get('naming_style', 'n/a')}")
+            suffixes = naming.get("class_suffixes", {})
+            if suffixes:
+                lines.append(f"Suffissi classi ricorrenti: {', '.join(f'{k}({v}x)' for k,v in suffixes.items())}")
+            prefixes = naming.get("function_prefixes", {})
+            if prefixes:
+                lines.append(f"Prefissi funzioni ricorrenti: {', '.join(f'{k}({v}x)' for k,v in prefixes.items())}")
+
+        # dipendenze esterne principali
+        deps = patterns_report.get("external_dependencies", [])
+        if deps:
+            top = [f"{d['library']}({d['usage_count']})" for d in deps[:5]]
+            lines.append(f"Dipendenze esterne principali: {', '.join(top)}")
+
+        return "\n".join(lines) if lines else "nessun pattern rilevato."
 
     def _format_commits(self, commits):
         # restituisce un messaggio se la lista dei commit è vuota
